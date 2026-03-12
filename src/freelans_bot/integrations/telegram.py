@@ -35,6 +35,9 @@ class TelegramNotifier:
             rows.append(
                 [InlineKeyboardButton(text="Сгенерировать отклик", callback_data=f"gen:{lead_id}")]
             )
+            rows.append(
+                [InlineKeyboardButton(text="Свой запрос к ИИ", callback_data=f"aiw:{lead_id}")]
+            )
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         await self.bot.send_message(chat_id=self.chat_id, text=text, reply_markup=kb)
 

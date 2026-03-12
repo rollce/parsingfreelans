@@ -40,12 +40,13 @@ class ProposalService:
         examples: list[ProposalExample] | None = None,
         profile_text: str | None = None,
         portfolio_urls: list[str] | None = None,
+        custom_request: str | None = None,
     ) -> ProposalDraft:
         language = self._target_language(lead)
         if not self.client:
             return ProposalDraft(
                 lead=lead,
-                text=self._fallback(lead, language, profile_text),
+                text=self._fallback(lead, language, profile_text, custom_request=custom_request),
                 language=language,
             )
 
@@ -55,9 +56,10 @@ class ProposalService:
             examples or [],
             profile_text=profile_text,
             portfolio_urls=portfolio_urls,
+            custom_request=custom_request,
         )
         if not text.strip():
-            text = self._fallback(lead, language, profile_text)
+            text = self._fallback(lead, language, profile_text, custom_request=custom_request)
         return ProposalDraft(lead=lead, text=text.strip(), language=language)
 
     def _target_language(self, lead: Lead) -> str:
@@ -68,22 +70,30 @@ class ProposalService:
             return guessed
         return "ru"
 
-    def _fallback(self, lead: Lead, language: str, profile_text: str | None = None) -> str:
+    def _fallback(
+        self,
+        lead: Lead,
+        language: str,
+        profile_text: str | None = None,
+        custom_request: str | None = None,
+    ) -> str:
         intro = (profile_text or "").strip()
         if intro:
             intro = compact(intro, 220)
+        custom = (custom_request or "").strip()
+        custom_line = f" Доп. пожелания: {compact(custom, 200)}." if custom else ""
         if language == "en":
             return (
                 f"Hello! I can deliver your task \"{lead.title}\" with clean code and clear communication. "
                 f"{intro + ' ' if intro else ''}"
                 "I build Telegram bots, parsers, API integrations and AI automation. "
-                "I can start today and provide milestones, daily updates, and support after delivery."
+                f"I can start today and provide milestones, daily updates, and support after delivery.{custom_line}"
             )
         return (
             f"Здравствуйте! Готов качественно выполнить задачу «{lead.title}». "
             f"{intro + ' ' if intro else ''}"
             "Специализируюсь на Telegram-ботах, парсинге, API-интеграциях и AI-автоматизации. "
-            "Могу быстро стартовать, зафиксировать этапы и ежедневно отчитываться по прогрессу."
+            f"Могу быстро стартовать, зафиксировать этапы и ежедневно отчитываться по прогрессу.{custom_line}"
         )
 
     def _render_examples(self, examples: list[ProposalExample], language: str) -> str:
@@ -114,6 +124,7 @@ class ProposalService:
         *,
         profile_text: str | None = None,
         portfolio_urls: list[str] | None = None,
+        custom_request: str | None = None,
     ) -> str:
         assert self.client is not None
 
@@ -127,6 +138,7 @@ class ProposalService:
         selected_portfolio = portfolio_urls or settings.portfolio_list
         portfolio = "\n".join(f"- {u}" for u in selected_portfolio) if selected_portfolio else "- N/A"
         learning_examples = self._render_examples(examples, language)
+        custom_line = compact(custom_request or "", 400).strip() or "-"
 
         prompt = f"""
 Language: {desired_language}
@@ -145,6 +157,9 @@ Project description:
 
 Approved examples from past successful proposals:
 {learning_examples}
+
+User custom request:
+{custom_line}
 
 Constraints:
 - 700-1200 characters

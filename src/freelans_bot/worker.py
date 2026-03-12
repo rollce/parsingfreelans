@@ -319,6 +319,12 @@ class Worker:
                 await self._generate_proposal_for_lead(int(raw_id), source="button")
             else:
                 await self.notifier.send_text("Некорректный ID лида", reply_markup=self._kb_main())
+        elif data.startswith("aiw:"):
+            raw_id = data.split(":", 1)[1]
+            if raw_id.isdigit():
+                await self._begin_ai_prompt(str(chat_id), int(raw_id), callback=callback)
+            else:
+                await self.notifier.send_text("Некорректный ID лида", reply_markup=self._kb_main())
         elif data.startswith("fb:"):
             parts = data.split(":")
             if len(parts) == 3 and parts[2].isdigit():
@@ -395,7 +401,11 @@ class Worker:
         await self._render_menu(text, self._kb_main(), callback=callback)
 
     async def _send_recent_leads(self, callback: CallbackQuery | None = None) -> None:
-        leads = await self.store.recent_leads(limit=12, min_score=settings.min_score_to_notify)
+        leads = await self.store.recent_leads(
+            limit=8,
+            min_score=settings.min_score_to_apply,
+            exclude_skipped=True,
+        )
         if not leads:
             await self._render_menu(
                 "Пока нет подходящих вакансий.\nЗапусти цикл и проверь снова.",
@@ -410,6 +420,7 @@ class Worker:
             return
 
         lines: list[str] = ["Последние вакансии:"]
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
         for item in leads:
             lines.append(
                 "\n".join(
@@ -422,14 +433,41 @@ class Worker:
                 )
             )
             lines.append("")
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(text=f"Отклик #{item['id']}", callback_data=f"gen:{item['id']}"),
+                    InlineKeyboardButton(text=f"Свой запрос #{item['id']}", callback_data=f"aiw:{item['id']}"),
+                ]
+            )
 
         text = "\n".join(lines).strip()
+        keyboard_rows.extend(
+            [
+                [InlineKeyboardButton(text="Обновить список", callback_data="menu:leads")],
+                [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+            ]
+        )
         await self._render_menu(
             text,
+            InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+            callback=callback,
+        )
+
+    async def _begin_ai_prompt(
+        self,
+        chat_key: str,
+        lead_id: int,
+        callback: CallbackQuery | None = None,
+    ) -> None:
+        self._pending_profile_input[chat_key] = f"ai:{lead_id}"
+        await self._render_menu(
+            f"Лид #{lead_id}\n"
+            "Напиши пожелания для отклика.\n"
+            "Например: стиль, срок, бюджет, стек, акценты.\n\n"
+            "После сообщения я сразу сгенерирую текст через ИИ.",
             InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="Обновить список", callback_data="menu:leads")],
-                    [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                    [InlineKeyboardButton(text="Назад к вакансиям", callback_data="menu:leads")],
                 ]
             ),
             callback=callback,
@@ -680,6 +718,16 @@ class Worker:
             return
 
         parts = pending.split(":")
+        if len(parts) == 2 and parts[0] == "ai" and parts[1].isdigit():
+            lead_id = int(parts[1])
+            self._pending_profile_input.pop(chat_key, None)
+            await self._generate_proposal_for_lead(
+                lead_id,
+                source="ai_custom_prompt",
+                custom_request=value,
+            )
+            return
+
         if len(parts) == 2 and parts[0] == "g":
             field = parts[1]
             if field == "portfolio_urls":
@@ -786,7 +834,12 @@ class Worker:
     def _yes_no(self, value: bool) -> str:
         return "Да" if value else "Нет"
 
-    async def _generate_proposal_for_lead(self, lead_id: int, source: str) -> None:
+    async def _generate_proposal_for_lead(
+        self,
+        lead_id: int,
+        source: str,
+        custom_request: str | None = None,
+    ) -> None:
         lead = await self.store.get_lead_by_id(lead_id)
         if not lead:
             await self.notifier.send_text(f"Лид не найден: {lead_id}", reply_markup=self._kb_main())
@@ -808,6 +861,7 @@ class Worker:
             examples=examples,
             profile_text=profile_text,
             portfolio_urls=portfolio_urls,
+            custom_request=custom_request,
         )
         await self.store.save_proposal(lead_id, draft)
         await self.notifier.send_draft(draft, lead_id=lead_id)

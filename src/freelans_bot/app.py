@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from freelans_bot.config.settings import settings
 from freelans_bot.worker import Worker
 
 worker: Worker | None = None
@@ -55,10 +56,18 @@ async def events(limit: int = 30) -> list[dict]:
 
 
 @app.get("/leads")
-async def leads(limit: int = 20, min_score: float = 0.0) -> list[dict]:
+async def leads(
+    limit: int = 20,
+    min_score: float = settings.min_score_to_apply,
+    exclude_skipped: bool = True,
+) -> list[dict]:
     if not worker:
         return []
-    return await worker.store.recent_leads(limit=min(limit, 100), min_score=max(0.0, min_score))
+    return await worker.store.recent_leads(
+        limit=min(limit, 100),
+        min_score=max(0.0, min_score),
+        exclude_skipped=exclude_skipped,
+    )
 
 
 @app.post("/feedback")

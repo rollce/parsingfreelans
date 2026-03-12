@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     database_path: str = "./data/freelans.db"
     poll_interval_seconds: int = 180
-    min_score_to_notify: float = 0.30
     min_score_to_apply: float = 0.45
     max_leads_per_platform: int = 40
     max_applies_per_cycle: int = 30

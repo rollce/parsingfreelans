@@ -234,20 +234,34 @@ class SQLiteStore:
             })
         return result
 
-    async def recent_leads(self, *, limit: int = 20, min_score: float = 0.0) -> list[dict]:
+    async def recent_leads(
+        self,
+        *,
+        limit: int = 20,
+        min_score: float = 0.0,
+        exclude_skipped: bool = True,
+    ) -> list[dict]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            where_parts = ["score >= ?"]
+            params: list[object] = [min_score]
+            if exclude_skipped:
+                where_parts.append("status != ?")
+                params.append(LeadStatus.SKIPPED.value)
+            where_clause = " AND ".join(where_parts)
             cur = await db.execute(
                 """
                 SELECT
                   id, platform, title, url, budget, language,
                   score, status, discovered_at, updated_at
                 FROM leads
-                WHERE score >= ?
+                WHERE """
+                + where_clause
+                + """
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (min_score, limit),
+                tuple([*params, limit]),
             )
             rows = await cur.fetchall()
 
