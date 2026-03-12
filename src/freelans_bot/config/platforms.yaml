@@ -15,6 +15,15 @@ flru:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], button[data-role='submit']"
     chat_link: "a[href*='messages'], a[href*='chat']"
+  profile:
+    edit_url: https://www.fl.ru/users/me/setup/
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"
 
 freelance_ru:
   display_name: Freelance.ru
@@ -33,6 +42,15 @@ freelance_ru:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], .submit-btn"
     chat_link: "a[href*='messages'], a[href*='dialog']"
+  profile:
+    edit_url: https://freelance.ru/my/profile
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"
 
 kwork:
   display_name: Kwork
@@ -51,6 +69,15 @@ kwork:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], .js-send-offer-submit"
     chat_link: "a[href*='conversations'], a[href*='chat']"
+  profile:
+    edit_url: https://kwork.ru/user/settings
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"
 
 workzilla:
   display_name: Workzilla
@@ -69,6 +96,15 @@ workzilla:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], .btn-primary"
     chat_link: "a[href*='chat'], a[href*='messages']"
+  profile:
+    edit_url: https://work-zilla.com/profile
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"
 
 youdo:
   display_name: YouDo
@@ -87,6 +123,15 @@ youdo:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], .btn-primary"
     chat_link: "a[href*='chat'], a[href*='messages']"
+  profile:
+    edit_url: https://youdo.com/settings/profile
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"
 
 yandex_uslugi:
   display_name: Yandex Uslugi
@@ -105,6 +150,15 @@ yandex_uslugi:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], .btn-primary"
     chat_link: "a[href*='chat'], a[href*='messages']"
+  profile:
+    edit_url: https://uslugi.yandex.ru/my/profile
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"
 
 freelancejob:
   display_name: FreelanceJob
@@ -123,3 +177,12 @@ freelancejob:
     proposal_textarea: "textarea[name='message'], textarea"
     submit_button: "button[type='submit'], .btn-primary"
     chat_link: "a[href*='chat'], a[href*='messages']"
+  profile:
+    edit_url: https://www.freelancejob.ru/account/
+    fields:
+      name: "input[name='name'], input[name='fio'], input[name='username']"
+      headline: "input[name='headline'], input[name='title'], input[name='specialization']"
+      resume: "textarea[name='about'], textarea[name='description'], textarea[name='bio']"
+      portfolio_urls: "textarea[name='portfolio'], textarea[name='portfolio_urls'], input[name='portfolio']"
+      rates: "input[name='rate'], input[name='hourly_rate'], input[name='price']"
+    save_button: "button[type='submit'], button:has-text('Сохранить'), button:has-text('Save')"

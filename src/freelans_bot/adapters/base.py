@@ -16,3 +16,7 @@ class BasePlatformAdapter(ABC):
     @abstractmethod
     async def apply(self, lead: Lead, proposal_text: str) -> ApplyResult:
         raise NotImplementedError
+
+    @abstractmethod
+    async def sync_profile(self, profile_data: dict[str, str]) -> tuple[bool, str]:
+        raise NotImplementedError

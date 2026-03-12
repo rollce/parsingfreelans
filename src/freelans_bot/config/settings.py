@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     openrouter_site_url: str = ""
     openrouter_app_name: str = "freelans-bot"
 
-    target_languages: str = "ru,en"
+    target_languages: str = "ru"
     keywords: str = "telegram bot,python,ai automation"
     focus_keywords: str = (
         "python,fastapi,django,flask,"

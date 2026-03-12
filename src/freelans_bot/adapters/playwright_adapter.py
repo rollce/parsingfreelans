@@ -125,6 +125,81 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
 
         return leads
 
+    async def sync_profile(self, profile_data: dict[str, str]) -> tuple[bool, str]:
+        profile_cfg = self.config.get("profile", {})
+        field_selectors = profile_cfg.get("fields", {})
+        if not isinstance(field_selectors, dict) or not field_selectors:
+            return False, "Для платформы не настроены селекторы профиля"
+
+        session_file = self._session_file()
+        if not session_file.exists():
+            return False, "Сессия не найдена. Сначала подключи аккаунт."
+
+        target_url = (
+            (profile_data.get("profile_url") or "").strip()
+            or str(profile_cfg.get("edit_url") or "").strip()
+            or str(self.config.get("login_url") or "").strip()
+            or str(self.config.get("feed_url") or "").strip()
+        )
+        if not target_url:
+            return False, "Не найден URL страницы профиля"
+
+        context = await self._new_context()
+        page = await context.new_page()
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
+            await page.wait_for_timeout(1000)
+
+            updated: list[str] = []
+            missing: list[str] = []
+            failed: list[str] = []
+
+            for field in ("name", "headline", "resume", "portfolio_urls", "rates"):
+                value = (profile_data.get(field) or "").strip()
+                selector = str(field_selectors.get(field) or "").strip()
+                if not value or not selector:
+                    continue
+
+                try:
+                    locator = page.locator(selector).first
+                    if await locator.count() == 0:
+                        missing.append(field)
+                        continue
+                    await locator.fill(value)
+                    updated.append(field)
+                except Exception:
+                    failed.append(field)
+
+            if not updated:
+                return False, "Поля профиля не найдены на странице или пустые значения"
+
+            save_selector = str(profile_cfg.get("save_button") or "").strip()
+            save_clicked = False
+            if save_selector:
+                try:
+                    save_btn = page.locator(save_selector).first
+                    if await save_btn.count():
+                        await save_btn.click()
+                        save_clicked = True
+                        await page.wait_for_timeout(1500)
+                except Exception:
+                    save_clicked = False
+
+            await context.storage_state(path=str(session_file))
+
+            parts = [f"Обновлено полей: {', '.join(updated)}"]
+            if missing:
+                parts.append(f"Не найдены селекторы: {', '.join(missing)}")
+            if failed:
+                parts.append(f"Ошибки заполнения: {', '.join(failed)}")
+            if save_selector and not save_clicked:
+                parts.append("Кнопка сохранения не найдена или не нажалась")
+            return True, ". ".join(parts)
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        finally:
+            await self._close_context(context)
+
     async def apply(self, lead: Lead, proposal_text: str) -> ApplyResult:
         apply_cfg = self.config.get("apply", {})
         if not apply_cfg:

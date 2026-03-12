@@ -428,7 +428,7 @@ class SQLiteStore:
     async def set_platform_profile_field(self, platform: str, field: str, value: str) -> None:
         normalized_platform = platform.strip().lower()
         normalized_field = field.strip().lower()
-        if normalized_field not in {"name", "headline", "resume", "portfolio_urls", "rates"}:
+        if normalized_field not in {"name", "headline", "resume", "portfolio_urls", "rates", "profile_url"}:
             raise ValueError("Unknown platform profile field")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

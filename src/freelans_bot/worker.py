@@ -21,33 +21,35 @@ from freelans_bot.storage.db import SQLiteStore
 
 class Worker:
     GLOBAL_PROFILE_HINTS = {
-        "name": "Отправь имя для профиля / Send profile name",
-        "resume": "Отправь текст резюме / Send resume text",
-        "avatar_url": "Отправь ссылку на аватар / Send avatar URL",
-        "portfolio_urls": "Отправь ссылки через запятую / Send comma-separated URLs",
+        "name": "Отправь имя для профиля.",
+        "resume": "Отправь текст общего резюме.",
+        "avatar_url": "Отправь ссылку на аватар.",
+        "portfolio_urls": "Отправь ссылки портфолио через запятую или с новой строки.",
     }
 
     GLOBAL_PROFILE_LABELS = {
-        "name": "Имя / Name",
-        "resume": "Резюме / Resume",
-        "avatar_url": "Аватар URL / Avatar URL",
-        "portfolio_urls": "Портфолио URL / Portfolio URLs",
+        "name": "Имя",
+        "resume": "Резюме",
+        "avatar_url": "Аватар",
+        "portfolio_urls": "Портфолио",
     }
 
     PLATFORM_PROFILE_HINTS = {
-        "name": "Имя на бирже / Name on platform",
-        "headline": "Заголовок профиля / Profile headline",
-        "resume": "Описание профиля / Platform resume",
-        "portfolio_urls": "Ссылки портфолио через запятую / Portfolio URLs",
-        "rates": "Ставки (фикс/час) / Rates (fixed/hourly)",
+        "name": "Имя на площадке.",
+        "headline": "Заголовок профиля.",
+        "resume": "Описание профиля на площадке.",
+        "portfolio_urls": "Ссылки портфолио через запятую или с новой строки.",
+        "rates": "Ставки (фикс/почасовая).",
+        "profile_url": "URL страницы редактирования профиля на этой площадке.",
     }
 
     PLATFORM_PROFILE_LABELS = {
-        "name": "Имя / Name",
-        "headline": "Заголовок / Headline",
-        "resume": "Описание / Resume",
-        "portfolio_urls": "Портфолио / Portfolio",
-        "rates": "Ставки / Rates",
+        "name": "Имя",
+        "headline": "Заголовок",
+        "resume": "Описание",
+        "portfolio_urls": "Портфолио",
+        "rates": "Ставки",
+        "profile_url": "URL профиля",
     }
 
     def __init__(self) -> None:
@@ -102,9 +104,10 @@ class Worker:
             )
 
         await self._send_main_menu(
-            "Система запущена / System started\n"
-            f"Пауза / Paused: {self._yes_no(self.paused)}\n"
-            f"Авто-отклик / Auto apply: {self._yes_no(self.auto_apply)}"
+            "Бот запущен.\n"
+            f"Пауза: {self._yes_no(self.paused)}\n"
+            f"Автоотклик: {self._yes_no(self.auto_apply)}\n\n"
+            "Напиши любое сообщение, чтобы открыть меню."
         )
 
     async def _loop(self) -> None:
@@ -124,7 +127,7 @@ class Worker:
                     "worker_error",
                     {"error": f"{type(exc).__name__}: {exc}"},
                 )
-                await self.notifier.send_text(f"[Ошибка / Error] Worker: {type(exc).__name__}: {exc}")
+                await self.notifier.send_text(f"Ошибка воркера: {type(exc).__name__}: {exc}")
                 await asyncio.sleep(2)
 
     async def _run_cycle(self, trigger: str) -> None:
@@ -154,14 +157,14 @@ class Worker:
         }
         await self.store.record_event(None, "cycle_summary", payload)
         await self.notifier.send_text(
-            "[Цикл / Cycle]\n"
-            f"Режим / Trigger: {trigger}\n"
-            f"Найдено / Found: {summary['found']}\n"
-            f"Новых / New: {summary['new']}\n"
-            f"Откликов / Applied: {summary['applied']}\n"
-            f"Платформ активно / Enabled platforms: {len(adapters)}\n"
-            f"Пауза / Paused: {self._yes_no(self.paused)}\n"
-            f"Авто-отклик / Auto apply: {self._yes_no(self.auto_apply)}"
+            "Цикл завершен:\n"
+            f"Режим: {trigger}\n"
+            f"Найдено: {summary['found']}\n"
+            f"Новых: {summary['new']}\n"
+            f"Откликов: {summary['applied']}\n"
+            f"Активных платформ: {len(adapters)}\n"
+            f"Пауза: {self._yes_no(self.paused)}\n"
+            f"Автоотклик: {self._yes_no(self.auto_apply)}"
         )
 
     async def _get_enabled_adapters(self) -> list[BasePlatformAdapter]:
@@ -175,6 +178,12 @@ class Worker:
             if enabled:
                 result.append(adapter)
         return result
+
+    def _get_adapter(self, platform: str) -> BasePlatformAdapter | None:
+        for adapter in self.orchestrator.adapters:
+            if adapter.name == platform:
+                return adapter
+        return None
 
     async def _wait_for_next_tick(self) -> None:
         wait_stop = asyncio.create_task(self._stop_event.wait())
@@ -241,17 +250,12 @@ class Worker:
         chat_key = str(message.chat.id)
         text = message.text.strip()
 
-        if text.startswith("/start"):
-            self._pending_profile_input.pop(chat_key, None)
-            await self._send_main_menu("Главное меню / Main menu")
-            return
-
         pending = self._pending_profile_input.get(chat_key)
         if pending:
             await self._save_profile_input(chat_key, pending, text)
             return
 
-        await self._send_main_menu("Используй /start и кнопки ниже / Use /start and inline buttons")
+        await self._send_main_menu("Главное меню")
 
     async def _handle_callback(self, callback: CallbackQuery) -> None:
         chat_id = callback.message.chat.id if callback.message else None
@@ -263,7 +267,7 @@ class Worker:
         data = (callback.data or "").strip()
 
         if data == "menu:main":
-            await self._send_main_menu("Главное меню / Main menu", callback=callback)
+            await self._send_main_menu("Главное меню", callback=callback)
         elif data == "menu:status":
             await self._send_status(callback=callback)
         elif data == "menu:accounts":
@@ -274,7 +278,7 @@ class Worker:
             await self._send_settings(callback=callback)
         elif data == "act:cycle":
             self._run_now_event.set()
-            await self._send_status(callback=callback, header="Цикл запущен вручную / Manual cycle requested")
+            await self._send_status(callback=callback, header="Ручной запуск цикла поставлен в очередь.")
         elif data == "toggle:pause":
             self.paused = not self.paused
             await self.store.set_runtime_flag("paused", self.paused)
@@ -292,13 +296,16 @@ class Worker:
         elif data.startswith("acc:"):
             platform = data.split(":", 1)[1]
             await self._send_account_detail(platform, callback=callback)
+        elif data.startswith("psync:"):
+            platform = data.split(":", 1)[1]
+            await self._sync_platform_profile(platform, callback=callback)
         elif data.startswith("ed:"):
             field = data.split(":", 1)[1]
             await self._begin_global_profile_input(str(chat_id), field, callback=callback)
         elif data.startswith("apf:"):
             parts = data.split(":", 2)
             if len(parts) != 3:
-                await self._send_main_menu("Некорректный запрос / Invalid action", callback=callback)
+                await self._send_main_menu("Некорректное действие", callback=callback)
             else:
                 platform, field = parts[1], parts[2]
                 await self._begin_platform_profile_input(str(chat_id), platform, field, callback=callback)
@@ -307,7 +314,7 @@ class Worker:
             if raw_id.isdigit():
                 await self._generate_proposal_for_lead(int(raw_id), source="button")
             else:
-                await self.notifier.send_text("Некорректный ID лида / Invalid lead id", reply_markup=self._kb_main())
+                await self.notifier.send_text("Некорректный ID лида", reply_markup=self._kb_main())
         elif data.startswith("fb:"):
             parts = data.split(":")
             if len(parts) == 3 and parts[2].isdigit():
@@ -315,14 +322,11 @@ class Worker:
                 lead_id = int(parts[2])
                 await self._save_feedback_by_lead_id(lead_id=lead_id, verdict=verdict, note="")
             else:
-                await self.notifier.send_text(
-                    "Некорректный callback фидбека / Invalid feedback callback",
-                    reply_markup=self._kb_main(),
-                )
+                await self.notifier.send_text("Некорректный callback оценки", reply_markup=self._kb_main())
         elif data == "noop":
             pass
         else:
-            await self._send_main_menu("Неизвестное действие / Unknown action", callback=callback)
+            await self._send_main_menu("Неизвестное действие", callback=callback)
 
         with suppress(Exception):
             await self.notifier.bot.answer_callback_query(callback.id)
@@ -348,21 +352,21 @@ class Worker:
         await self.notifier.send_text(text, reply_markup=reply_markup)
 
     async def _send_main_menu(self, text: str | None = None, callback: CallbackQuery | None = None) -> None:
-        message = text or "Главное меню / Main menu"
+        message = text or "Главное меню"
         await self._render_menu(message, self._kb_main(), callback=callback)
 
     def _kb_main(self) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Статус / Status", callback_data="menu:status"),
-                    InlineKeyboardButton(text="Аккаунты / Accounts", callback_data="menu:accounts"),
+                    InlineKeyboardButton(text="Статус", callback_data="menu:status"),
+                    InlineKeyboardButton(text="Аккаунты", callback_data="menu:accounts"),
                 ],
                 [
-                    InlineKeyboardButton(text="Профиль / Profile", callback_data="menu:profile"),
-                    InlineKeyboardButton(text="Настройки / Settings", callback_data="menu:settings"),
+                    InlineKeyboardButton(text="Профиль", callback_data="menu:profile"),
+                    InlineKeyboardButton(text="Настройки", callback_data="menu:settings"),
                 ],
-                [InlineKeyboardButton(text="Запустить цикл / Run cycle", callback_data="act:cycle")],
+                [InlineKeyboardButton(text="Запустить цикл", callback_data="act:cycle")],
             ]
         )
 
@@ -371,20 +375,20 @@ class Worker:
         adapters = await self._get_enabled_adapters()
         text = (
             f"{header + '\n' if header else ''}"
-            "[Статус / Status]\n"
-            f"Пауза / Paused: {self._yes_no(self.paused)}\n"
-            f"Авто-отклик / Auto apply: {self._yes_no(self.auto_apply)}\n"
-            f"Активных платформ / Enabled platforms: {len(adapters)}\n"
-            f"Новые / New: {stats.get('new', 0)}\n"
-            f"Черновики / Drafted: {stats.get('drafted', 0)}\n"
-            f"Отправлено / Applied: {stats.get('applied', 0)}\n"
-            f"Ошибки / Failed: {stats.get('failed', 0)}\n"
-            f"Пропущено / Skipped: {stats.get('skipped', 0)}"
+            "Статус:\n"
+            f"Пауза: {self._yes_no(self.paused)}\n"
+            f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
+            f"Активных платформ: {len(adapters)}\n"
+            f"Новые: {stats.get('new', 0)}\n"
+            f"Черновики: {stats.get('drafted', 0)}\n"
+            f"Отправлено: {stats.get('applied', 0)}\n"
+            f"Ошибки: {stats.get('failed', 0)}\n"
+            f"Пропущено: {stats.get('skipped', 0)}"
         )
         await self._render_menu(text, self._kb_main(), callback=callback)
 
     async def _send_accounts(self, callback: CallbackQuery | None = None) -> None:
-        lines: list[str] = ["[Аккаунты / Accounts]", "Выбери площадку / Choose platform:"]
+        lines: list[str] = ["Аккаунты:", "Выбери площадку:"]
         keyboard_rows: list[list[InlineKeyboardButton]] = []
 
         for key in sorted(self.platforms_cfg.keys()):
@@ -398,12 +402,11 @@ class Worker:
                 default=default_enabled,
             )
             lines.append(
-                f"{display} ({key}) | Подключен/Connected: {self._yes_no(connected)} | "
-                f"Мониторинг/Monitoring: {self._yes_no(enabled)}"
+                f"{display} ({key}) | Подключен: {self._yes_no(connected)} | Мониторинг: {self._yes_no(enabled)}"
             )
             keyboard_rows.append([InlineKeyboardButton(text=display, callback_data=f"acc:{key}")])
 
-        keyboard_rows.append([InlineKeyboardButton(text="Назад / Back", callback_data="menu:main")])
+        keyboard_rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:main")])
         await self._render_menu(
             "\n".join(lines),
             InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
@@ -422,7 +425,6 @@ class Worker:
             return
 
         display = cfg.get("display_name", platform)
-        login_url = cfg.get("login_url", cfg.get("feed_url", "-"))
         session = self._session_file_path(platform)
         connected = session.exists()
         default_enabled = self.platform_defaults.get(platform, True)
@@ -432,48 +434,47 @@ class Worker:
         )
         p = await self.store.get_platform_profile(platform)
 
+        default_profile_url = str(cfg.get("profile", {}).get("edit_url") or cfg.get("login_url") or "")
         p_name = p.get("name", "-")
         p_headline = p.get("headline", "-")
         p_resume = (p.get("resume", "-") or "-")[:300]
         p_rates = p.get("rates", "-")
+        p_profile_url = p.get("profile_url", default_profile_url or "-")
         p_portfolio = self._portfolio_urls(p.get("portfolio_urls", ""))
         p_portfolio_text = ", ".join(p_portfolio) if p_portfolio else "-"
 
         text = (
             f"{note + '\n' if note else ''}"
-            f"[Площадка / Platform] {display} ({platform})\n"
-            f"Подключен / Connected: {self._yes_no(connected)}\n"
-            f"Мониторинг / Monitoring: {self._yes_no(enabled)}\n"
-            f"URL входа / Login URL: {login_url}\n\n"
-            "[Анкета площадки / Platform profile]\n"
-            f"Имя / Name: {p_name}\n"
-            f"Заголовок / Headline: {p_headline}\n"
-            f"Описание / Resume: {p_resume}\n"
-            f"Портфолио / Portfolio: {p_portfolio_text}\n"
-            f"Ставки / Rates: {p_rates}"
+            f"Площадка: {display} ({platform})\n"
+            f"Подключен: {self._yes_no(connected)}\n"
+            f"Мониторинг: {self._yes_no(enabled)}\n\n"
+            "Анкета площадки:\n"
+            f"Имя: {p_name}\n"
+            f"Заголовок: {p_headline}\n"
+            f"Описание: {p_resume}\n"
+            f"Портфолио: {p_portfolio_text}\n"
+            f"Ставки: {p_rates}\n"
+            f"URL профиля: {p_profile_url}"
         )
 
-        toggle_text = (
-            "Выключить мониторинг / Disable monitoring"
-            if enabled
-            else "Включить мониторинг / Enable monitoring"
-        )
-        logout_text = "Удалить сессию / Logout" if connected else "Сессии нет / No session"
+        toggle_text = "Выключить мониторинг" if enabled else "Включить мониторинг"
+        logout_text = "Удалить сессию" if connected else "Сессии нет"
         logout_cb = f"lo:{platform}" if connected else "noop"
 
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=toggle_text, callback_data=f"pt:{platform}")],
                 [InlineKeyboardButton(text=logout_text, callback_data=logout_cb)],
+                [InlineKeyboardButton(text="Синхронизировать на сайт", callback_data=f"psync:{platform}")],
                 [
-                    InlineKeyboardButton(text="Имя / Name", callback_data=f"apf:{platform}:name"),
-                    InlineKeyboardButton(text="Заголовок / Headline", callback_data=f"apf:{platform}:headline"),
+                    InlineKeyboardButton(text="Имя", callback_data=f"apf:{platform}:name"),
+                    InlineKeyboardButton(text="Заголовок", callback_data=f"apf:{platform}:headline"),
                 ],
-                [InlineKeyboardButton(text="Описание / Resume", callback_data=f"apf:{platform}:resume")],
-                [InlineKeyboardButton(text="Портфолио / Portfolio", callback_data=f"apf:{platform}:portfolio_urls")],
-                [InlineKeyboardButton(text="Ставки / Rates", callback_data=f"apf:{platform}:rates")],
-                [InlineKeyboardButton(text="Открыть вход / Open login", url=login_url)],
-                [InlineKeyboardButton(text="К списку / Back to list", callback_data="menu:accounts")],
+                [InlineKeyboardButton(text="Описание", callback_data=f"apf:{platform}:resume")],
+                [InlineKeyboardButton(text="Портфолио", callback_data=f"apf:{platform}:portfolio_urls")],
+                [InlineKeyboardButton(text="Ставки", callback_data=f"apf:{platform}:rates")],
+                [InlineKeyboardButton(text="URL профиля", callback_data=f"apf:{platform}:profile_url")],
+                [InlineKeyboardButton(text="Назад к списку", callback_data="menu:accounts")],
             ]
         )
         await self._render_menu(text, kb, callback=callback)
@@ -497,17 +498,57 @@ class Worker:
         session = self._session_file_path(platform)
         if session.exists():
             session.unlink()
-            await self._send_account_detail(
-                platform,
-                callback=callback,
-                note="Сессия удалена / Session removed",
-            )
+            await self._send_account_detail(platform, callback=callback, note="Сессия удалена")
         else:
-            await self._send_account_detail(
-                platform,
-                callback=callback,
-                note="Сессия не найдена / Session not found",
-            )
+            await self._send_account_detail(platform, callback=callback, note="Сессия не найдена")
+
+    async def _sync_platform_profile(
+        self,
+        platform: str,
+        callback: CallbackQuery | None = None,
+        silent: bool = False,
+    ) -> None:
+        adapter = self._get_adapter(platform)
+        if not adapter:
+            if callback:
+                await self._send_account_detail(platform, callback=callback, note="Адаптер платформы не найден")
+            elif not silent:
+                await self.notifier.send_text(f"Адаптер платформы не найден: {platform}")
+            return
+
+        profile = await self.store.get_profile()
+        platform_profile = await self.store.get_platform_profile(platform)
+        cfg = self.platforms_cfg.get(platform, {})
+        default_profile_url = str(cfg.get("profile", {}).get("edit_url") or cfg.get("login_url") or "")
+
+        global_name = (profile.get("name") or "").strip()
+        global_resume = (profile.get("resume") or settings.freelancer_profile).strip()
+        global_portfolio = self._portfolio_urls(profile.get("portfolio_urls", "")) or settings.portfolio_list
+
+        merged_resume = self._compose_profile_text(global_resume, platform_profile)
+        merged_portfolio = self._merge_portfolio_urls(
+            global_portfolio,
+            platform_profile.get("portfolio_urls", ""),
+        )
+
+        payload = {
+            "name": (platform_profile.get("name") or global_name).strip(),
+            "headline": (platform_profile.get("headline") or "").strip(),
+            "resume": merged_resume,
+            "portfolio_urls": "\n".join(merged_portfolio),
+            "rates": (platform_profile.get("rates") or "").strip(),
+            "profile_url": (platform_profile.get("profile_url") or default_profile_url).strip(),
+        }
+
+        ok, message = await adapter.sync_profile(payload)
+        note = f"Синхронизация {'успешна' if ok else 'с ошибкой'}: {message}"
+
+        if callback:
+            await self._send_account_detail(platform, callback=callback, note=note)
+            return
+
+        if not silent:
+            await self.notifier.send_text(note, reply_markup=self._kb_main())
 
     async def _send_profile_menu(self, callback: CallbackQuery | None = None) -> None:
         profile = await self.store.get_profile()
@@ -518,21 +559,21 @@ class Worker:
         portfolio_txt = ", ".join(portfolio) if portfolio else "-"
 
         text = (
-            "[Общий профиль / Global profile]\n"
-            f"Имя / Name: {name or '-'}\n"
-            f"Аватар / Avatar: {avatar or '-'}\n"
-            f"Резюме / Resume: {(resume or '-')[:450]}\n"
-            f"Портфолио / Portfolio: {portfolio_txt}\n\n"
-            "Выбери поле для редактирования / Choose field to edit"
+            "Общий профиль:\n"
+            f"Имя: {name or '-'}\n"
+            f"Аватар: {avatar or '-'}\n"
+            f"Резюме: {(resume or '-')[:450]}\n"
+            f"Портфолио: {portfolio_txt}\n\n"
+            "Выбери поле для редактирования"
         )
 
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Имя / Name", callback_data="ed:name")],
-                [InlineKeyboardButton(text="Резюме / Resume", callback_data="ed:resume")],
-                [InlineKeyboardButton(text="Аватар / Avatar URL", callback_data="ed:avatar_url")],
-                [InlineKeyboardButton(text="Портфолио / Portfolio URLs", callback_data="ed:portfolio_urls")],
-                [InlineKeyboardButton(text="Назад / Back", callback_data="menu:main")],
+                [InlineKeyboardButton(text="Имя", callback_data="ed:name")],
+                [InlineKeyboardButton(text="Резюме", callback_data="ed:resume")],
+                [InlineKeyboardButton(text="Аватар", callback_data="ed:avatar_url")],
+                [InlineKeyboardButton(text="Портфолио", callback_data="ed:portfolio_urls")],
+                [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
             ]
         )
         await self._render_menu(text, kb, callback=callback)
@@ -550,10 +591,10 @@ class Worker:
         label = self.GLOBAL_PROFILE_LABELS[field]
         hint = self.GLOBAL_PROFILE_HINTS[field]
         await self._render_menu(
-            f"Режим ввода / Input mode: {label}\n{hint}\n\n"
-            "Отправь одно сообщение текстом / Send one plain text message.",
+            f"Режим ввода: {label}\n{hint}\n\n"
+            "Отправь одно текстовое сообщение.",
             InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Назад / Back", callback_data="menu:profile")]]
+                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu:profile")]]
             ),
             callback=callback,
         )
@@ -573,12 +614,12 @@ class Worker:
         hint = self.PLATFORM_PROFILE_HINTS[field]
         display = self.platforms_cfg.get(platform, {}).get("display_name", platform)
         await self._render_menu(
-            f"Площадка / Platform: {display}\n"
-            f"Режим ввода / Input mode: {label}\n{hint}\n\n"
-            "Отправь одно сообщение текстом / Send one plain text message.",
+            f"Площадка: {display}\n"
+            f"Режим ввода: {label}\n{hint}\n\n"
+            "Отправь одно текстовое сообщение.",
             InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="Назад / Back", callback_data=f"acc:{platform}")],
+                    [InlineKeyboardButton(text="Назад", callback_data=f"acc:{platform}")],
                 ]
             ),
             callback=callback,
@@ -587,7 +628,7 @@ class Worker:
     async def _save_profile_input(self, chat_key: str, pending: str, text: str) -> None:
         value = text.strip()
         if not value:
-            await self.notifier.send_text("Пустое значение / Empty value", reply_markup=self._kb_main())
+            await self.notifier.send_text("Пустое значение", reply_markup=self._kb_main())
             return
 
         parts = pending.split(":")
@@ -597,15 +638,13 @@ class Worker:
                 urls = self._portfolio_urls(value)
                 await self.store.set_profile_field("portfolio_urls", ",".join(urls))
                 self._pending_profile_input.pop(chat_key, None)
-                await self.notifier.send_text(
-                    f"Сохранено / Saved: {self.GLOBAL_PROFILE_LABELS[field]} ({len(urls)})"
-                )
+                await self.notifier.send_text(f"Сохранено: {self.GLOBAL_PROFILE_LABELS[field]} ({len(urls)})")
                 await self._send_profile_menu()
                 return
 
             await self.store.set_profile_field(field, value)
             self._pending_profile_input.pop(chat_key, None)
-            await self.notifier.send_text(f"Сохранено / Saved: {self.GLOBAL_PROFILE_LABELS[field]}")
+            await self.notifier.send_text(f"Сохранено: {self.GLOBAL_PROFILE_LABELS[field]}")
             await self._send_profile_menu()
             return
 
@@ -620,40 +659,31 @@ class Worker:
             self._pending_profile_input.pop(chat_key, None)
             label = self.PLATFORM_PROFILE_LABELS.get(field, field)
             display = self.platforms_cfg.get(platform, {}).get("display_name", platform)
-            await self.notifier.send_text(
-                f"Сохранено / Saved: {display} -> {label}",
-                reply_markup=self._kb_main(),
-            )
+            await self.notifier.send_text(f"Сохранено: {display} -> {label}")
+            await self._sync_platform_profile(platform, silent=False)
             await self._send_account_detail(platform)
             return
 
         self._pending_profile_input.pop(chat_key, None)
-        await self.notifier.send_text("Не удалось распознать режим ввода / Input mode not recognized")
+        await self.notifier.send_text("Не удалось распознать режим ввода")
 
     def _kb_settings(self) -> InlineKeyboardMarkup:
-        pause_text = (
-            "Продолжить / Resume" if self.paused else "Пауза / Pause"
-        )
-        auto_text = (
-            "Авто-отклик: ВКЛ / Auto apply: ON"
-            if self.auto_apply
-            else "Авто-отклик: ВЫКЛ / Auto apply: OFF"
-        )
+        pause_text = "Продолжить" if self.paused else "Пауза"
+        auto_text = "Автоотклик: ВКЛ" if self.auto_apply else "Автоотклик: ВЫКЛ"
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=pause_text, callback_data="toggle:pause")],
                 [InlineKeyboardButton(text=auto_text, callback_data="toggle:auto")],
-                [InlineKeyboardButton(text="Назад / Back", callback_data="menu:main")],
+                [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
             ]
         )
 
     async def _send_settings(self, callback: CallbackQuery | None = None) -> None:
         await self._render_menu(
-            "[Настройки / Settings]\n"
-            f"Пауза / Paused: {self._yes_no(self.paused)}\n"
-            f"Авто-отклик / Auto apply: {self._yes_no(self.auto_apply)}\n\n"
-            "Если авто-отклик выключен, бот только парсит и дает кнопку генерации.\n"
-            "If auto apply is off, bot only parses and offers manual generation button.",
+            "Настройки:\n"
+            f"Пауза: {self._yes_no(self.paused)}\n"
+            f"Автоотклик: {self._yes_no(self.auto_apply)}\n\n"
+            "Если автоотклик выключен, бот только парсит и дает кнопку генерации.",
             self._kb_settings(),
             callback=callback,
         )
@@ -679,13 +709,13 @@ class Worker:
 
         platform_lines: list[str] = []
         if name:
-            platform_lines.append(f"Platform name: {name}")
+            platform_lines.append(f"Имя на площадке: {name}")
         if headline:
-            platform_lines.append(f"Platform headline: {headline}")
+            platform_lines.append(f"Заголовок: {headline}")
         if resume:
-            platform_lines.append(f"Platform resume: {resume}")
+            platform_lines.append(f"Описание: {resume}")
         if rates:
-            platform_lines.append(f"Rates: {rates}")
+            platform_lines.append(f"Ставки: {rates}")
         if platform_lines:
             chunks.append("\n".join(platform_lines))
 
@@ -706,12 +736,12 @@ class Worker:
         return merged
 
     def _yes_no(self, value: bool) -> str:
-        return "Да / Yes" if value else "Нет / No"
+        return "Да" if value else "Нет"
 
     async def _generate_proposal_for_lead(self, lead_id: int, source: str) -> None:
         lead = await self.store.get_lead_by_id(lead_id)
         if not lead:
-            await self.notifier.send_text(f"Лид не найден / Lead not found: {lead_id}", reply_markup=self._kb_main())
+            await self.notifier.send_text(f"Лид не найден: {lead_id}", reply_markup=self._kb_main())
             return
 
         profile = await self.store.get_profile()
@@ -746,7 +776,7 @@ class Worker:
 
     async def _save_feedback_by_lead_id(self, *, lead_id: int, verdict: str, note: str) -> None:
         if verdict not in {"good", "bad", "neutral"}:
-            await self.notifier.send_text("Некорректная оценка / Invalid feedback verdict", reply_markup=self._kb_main())
+            await self.notifier.send_text("Некорректная оценка", reply_markup=self._kb_main())
             return
         await self.store.save_feedback(lead_id=lead_id, verdict=verdict, note=note)
         await self.store.record_event(
@@ -754,9 +784,7 @@ class Worker:
             "feedback_saved",
             {"verdict": verdict, "note": note},
         )
-        await self.notifier.send_text(
-            f"Оценка сохранена / Feedback saved: lead_id={lead_id}, verdict={verdict}"
-        )
+        await self.notifier.send_text(f"Оценка сохранена: lead_id={lead_id}, verdict={verdict}")
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -768,7 +796,7 @@ class Worker:
                 with suppress(asyncio.CancelledError):
                     await task
 
-        await self.notifier.send_text("Система остановлена / System stopped")
+        await self.notifier.send_text("Бот остановлен")
         await self.notifier.close()
 
 
