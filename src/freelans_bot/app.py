@@ -54,6 +54,13 @@ async def events(limit: int = 30) -> list[dict]:
     return await worker.store.recent_events(limit=limit)
 
 
+@app.get("/leads")
+async def leads(limit: int = 20, min_score: float = 0.0) -> list[dict]:
+    if not worker:
+        return []
+    return await worker.store.recent_leads(limit=min(limit, 100), min_score=max(0.0, min_score))
+
+
 @app.post("/feedback")
 async def feedback(payload: FeedbackIn) -> dict:
     if not worker:

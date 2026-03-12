@@ -17,6 +17,7 @@ from freelans_bot.integrations.telegram import TelegramNotifier
 from freelans_bot.services.proposal import ProposalService
 from freelans_bot.services.scoring import LeadScorer
 from freelans_bot.storage.db import SQLiteStore
+from freelans_bot.utils.text import compact
 
 
 class Worker:
@@ -156,16 +157,17 @@ class Worker:
             "enabled_platforms": [a.name for a in adapters],
         }
         await self.store.record_event(None, "cycle_summary", payload)
-        await self.notifier.send_text(
-            "Цикл завершен:\n"
-            f"Режим: {trigger}\n"
-            f"Найдено: {summary['found']}\n"
-            f"Новых: {summary['new']}\n"
-            f"Откликов: {summary['applied']}\n"
-            f"Активных платформ: {len(adapters)}\n"
-            f"Пауза: {self._yes_no(self.paused)}\n"
-            f"Автоотклик: {self._yes_no(self.auto_apply)}"
-        )
+        if trigger == "manual":
+            await self.notifier.send_text(
+                "Цикл завершен:\n"
+                f"Режим: {trigger}\n"
+                f"Найдено: {summary['found']}\n"
+                f"Новых: {summary['new']}\n"
+                f"Откликов: {summary['applied']}\n"
+                f"Активных платформ: {len(adapters)}\n"
+                f"Пауза: {self._yes_no(self.paused)}\n"
+                f"Автоотклик: {self._yes_no(self.auto_apply)}"
+            )
 
     async def _get_enabled_adapters(self) -> list[BasePlatformAdapter]:
         result: list[BasePlatformAdapter] = []
@@ -270,6 +272,8 @@ class Worker:
             await self._send_main_menu("Главное меню", callback=callback)
         elif data == "menu:status":
             await self._send_status(callback=callback)
+        elif data == "menu:leads":
+            await self._send_recent_leads(callback=callback)
         elif data == "menu:accounts":
             await self._send_accounts(callback=callback)
         elif data == "menu:profile":
@@ -360,6 +364,9 @@ class Worker:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(text="Статус", callback_data="menu:status"),
+                    InlineKeyboardButton(text="Вакансии", callback_data="menu:leads"),
+                ],
+                [
                     InlineKeyboardButton(text="Аккаунты", callback_data="menu:accounts"),
                 ],
                 [
@@ -386,6 +393,47 @@ class Worker:
             f"Пропущено: {stats.get('skipped', 0)}"
         )
         await self._render_menu(text, self._kb_main(), callback=callback)
+
+    async def _send_recent_leads(self, callback: CallbackQuery | None = None) -> None:
+        leads = await self.store.recent_leads(limit=12, min_score=settings.min_score_to_notify)
+        if not leads:
+            await self._render_menu(
+                "Пока нет подходящих вакансий.\nЗапусти цикл и проверь снова.",
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="Запустить цикл", callback_data="act:cycle")],
+                        [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                    ]
+                ),
+                callback=callback,
+            )
+            return
+
+        lines: list[str] = ["Последние вакансии:"]
+        for item in leads:
+            lines.append(
+                "\n".join(
+                    [
+                        f"#{item['id']} | {item['platform']} | score={item['score']:.2f}",
+                        f"{compact(item['title'], 110)}",
+                        f"Бюджет: {item['budget'] or '-'} | Статус: {item['status']}",
+                        item["url"],
+                    ]
+                )
+            )
+            lines.append("")
+
+        text = "\n".join(lines).strip()
+        await self._render_menu(
+            text,
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить список", callback_data="menu:leads")],
+                    [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                ]
+            ),
+            callback=callback,
+        )
 
     async def _send_accounts(self, callback: CallbackQuery | None = None) -> None:
         lines: list[str] = ["Аккаунты:", "Выбери площадку:"]

@@ -234,6 +234,41 @@ class SQLiteStore:
             })
         return result
 
+    async def recent_leads(self, *, limit: int = 20, min_score: float = 0.0) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  id, platform, title, url, budget, language,
+                  score, status, discovered_at, updated_at
+                FROM leads
+                WHERE score >= ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (min_score, limit),
+            )
+            rows = await cur.fetchall()
+
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "id": int(row["id"]),
+                    "platform": row["platform"],
+                    "title": row["title"],
+                    "url": row["url"],
+                    "budget": row["budget"],
+                    "language": row["language"],
+                    "score": float(row["score"] or 0),
+                    "status": row["status"],
+                    "discovered_at": row["discovered_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return out
+
     async def find_lead_id_by_url(self, url: str) -> int | None:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
