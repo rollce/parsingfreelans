@@ -1,0 +1,125 @@
+flru:
+  display_name: FL.ru
+  login_url: https://www.fl.ru/account/login/
+  feed_url: https://www.fl.ru/projects/
+  session_file: flru.json
+  selectors:
+    card: "article, .b-post, .project-list-item"
+    title: "h2 a, .b-post__title a, .project-list-item__title a"
+    url: "h2 a, .b-post__title a, .project-list-item__title a"
+    description: ".b-post__txt, .project-list-item__description"
+    budget: ".b-post__price, .project-list-item__price"
+    date: "time, .b-post__date"
+  apply:
+    apply_button: "a[href*='offer'], button[data-role='reply']"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], button[data-role='submit']"
+    chat_link: "a[href*='messages'], a[href*='chat']"
+
+freelance_ru:
+  display_name: Freelance.ru
+  login_url: https://freelance.ru/login
+  feed_url: https://freelance.ru/projects
+  session_file: freelance_ru.json
+  selectors:
+    card: ".project-item, article, .task-item"
+    title: "h2 a, h3 a, .project-title a"
+    url: "h2 a, h3 a, .project-title a"
+    description: ".description, .project-item__description"
+    budget: ".price, .budget"
+    date: "time, .date"
+  apply:
+    apply_button: "a[href*='offer'], a[href*='response'], button[data-role='reply']"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], .submit-btn"
+    chat_link: "a[href*='messages'], a[href*='dialog']"
+
+kwork:
+  display_name: Kwork
+  login_url: https://kwork.ru/login
+  feed_url: https://kwork.ru/projects
+  session_file: kwork.json
+  selectors:
+    card: ".wants-card, .project-card, article"
+    title: "h2 a, h3 a, .wants-card__title a"
+    url: "h2 a, h3 a, .wants-card__title a"
+    description: ".wants-card__description, .description"
+    budget: ".wants-card__price, .price"
+    date: "time, .date"
+  apply:
+    apply_button: "a[href*='offer'], button[data-role='reply'], .js-send-offer"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], .js-send-offer-submit"
+    chat_link: "a[href*='conversations'], a[href*='chat']"
+
+workzilla:
+  display_name: Workzilla
+  login_url: https://work-zilla.com/login
+  feed_url: https://work-zilla.com/tasks/
+  session_file: workzilla.json
+  selectors:
+    card: ".task-card, article, .card"
+    title: "h2 a, h3 a, .task-card__title a"
+    url: "h2 a, h3 a, .task-card__title a"
+    description: ".task-card__description, .description"
+    budget: ".task-card__price, .price"
+    date: "time, .date"
+  apply:
+    apply_button: "a[href*='offer'], button[data-role='response']"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], .btn-primary"
+    chat_link: "a[href*='chat'], a[href*='messages']"
+
+youdo:
+  display_name: YouDo
+  login_url: https://youdo.com/
+  feed_url: https://youdo.com/frilans
+  session_file: youdo.json
+  selectors:
+    card: ".task-preview, article, .job-card"
+    title: "h2 a, h3 a, .task-preview__title a"
+    url: "h2 a, h3 a, .task-preview__title a"
+    description: ".task-preview__description, .description"
+    budget: ".task-preview__price, .price"
+    date: "time, .date"
+  apply:
+    apply_button: "a[href*='offer'], button[data-role='respond']"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], .btn-primary"
+    chat_link: "a[href*='chat'], a[href*='messages']"
+
+yandex_uslugi:
+  display_name: Yandex Uslugi
+  login_url: https://passport.yandex.ru/auth
+  feed_url: https://uslugi.yandex.ru/
+  session_file: yandex_uslugi.json
+  selectors:
+    card: "article, .service-card, .task-card"
+    title: "h2 a, h3 a, .service-card__title a"
+    url: "h2 a, h3 a, .service-card__title a"
+    description: ".service-card__description, .description"
+    budget: ".service-card__price, .price"
+    date: "time, .date"
+  apply:
+    apply_button: "a[href*='offer'], button[data-role='respond']"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], .btn-primary"
+    chat_link: "a[href*='chat'], a[href*='messages']"
+
+freelancejob:
+  display_name: FreelanceJob
+  login_url: https://www.freelancejob.ru/
+  feed_url: https://www.freelancejob.ru/projects/
+  session_file: freelancejob.json
+  selectors:
+    card: ".prj, article, .project-card"
+    title: "h2 a, h3 a"
+    url: "h2 a, h3 a"
+    description: ".descr, .description"
+    budget: ".cost, .price"
+    date: "time, .date"
+  apply:
+    apply_button: "a[href*='offer'], a[href*='response'], button[data-role='reply']"
+    proposal_textarea: "textarea[name='message'], textarea"
+    submit_button: "button[type='submit'], .btn-primary"
+    chat_link: "a[href*='chat'], a[href*='messages']"
