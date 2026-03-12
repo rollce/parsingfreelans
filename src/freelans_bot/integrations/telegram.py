@@ -18,40 +18,42 @@ class TelegramNotifier:
 
     async def send_lead_scored(self, scored: ScoredLead, lead_id: int | None = None) -> None:
         lead = scored.lead
-        lead_line = f"Lead ID: {lead_id}\n" if lead_id is not None else ""
+        lead_line = f"ID лида / Lead ID: {lead_id}\n" if lead_id is not None else ""
         text = (
-            f"[NEW] {lead.platform}\n"
+            f"[Новый заказ / New lead] {lead.platform}\n"
             f"{lead_line}"
-            f"Score: {scored.score:.2f}\n"
-            f"Title: {lead.title}\n"
-            f"Budget: {lead.budget or '-'}\n"
-            f"Lang: {lead.language or 'unknown'}\n"
-            f"Reasons: {'; '.join(scored.reasons)}\n"
-            f"URL: {lead.url}\n"
-            f"Desc: {compact(lead.description, 450)}"
+            f"Оценка / Score: {scored.score:.2f}\n"
+            f"Заголовок / Title: {lead.title}\n"
+            f"Бюджет / Budget: {lead.budget or '-'}\n"
+            f"Язык / Language: {lead.language or 'unknown'}\n"
+            f"Причины / Reasons: {'; '.join(scored.reasons)}\n"
+            f"Ссылка / URL: {lead.url}\n"
+            f"Описание / Description: {compact(lead.description, 450)}"
         )
-        rows = [[InlineKeyboardButton(text="Open job", url=lead.url)]]
+        rows = [[InlineKeyboardButton(text="Открыть заказ / Open job", url=lead.url)]]
         if lead_id is not None:
-            rows.append([InlineKeyboardButton(text="Generate proposal", callback_data=f"gen:{lead_id}")])
+            rows.append(
+                [InlineKeyboardButton(text="Сгенерировать отклик / Generate proposal", callback_data=f"gen:{lead_id}")]
+            )
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         await self.bot.send_message(chat_id=self.chat_id, text=text, reply_markup=kb)
 
     async def send_draft(self, draft: ProposalDraft, lead_id: int | None = None) -> None:
         lead = draft.lead
-        lead_line = f"Lead ID: {lead_id}\n" if lead_id is not None else ""
+        lead_line = f"ID лида / Lead ID: {lead_id}\n" if lead_id is not None else ""
         text = (
-            f"[DRAFT] {lead.platform}\n"
+            f"[Черновик / Draft] {lead.platform}\n"
             f"{lead_line}"
-            f"{lead.title}\n"
-            f"Language: {draft.language}\n"
-            f"Proposal:\n{compact(draft.text, 1200)}"
+            f"Проект / Project: {lead.title}\n"
+            f"Язык / Language: {draft.language}\n"
+            f"Отклик / Proposal:\n{compact(draft.text, 1200)}"
         )
-        rows = [[InlineKeyboardButton(text="Open job", url=lead.url)]]
+        rows = [[InlineKeyboardButton(text="Открыть заказ / Open job", url=lead.url)]]
         if lead_id is not None:
             rows.append(
                 [
-                    InlineKeyboardButton(text="Mark Good", callback_data=f"fb:good:{lead_id}"),
-                    InlineKeyboardButton(text="Mark Bad", callback_data=f"fb:bad:{lead_id}"),
+                    InlineKeyboardButton(text="Хорошо / Good", callback_data=f"fb:good:{lead_id}"),
+                    InlineKeyboardButton(text="Плохо / Bad", callback_data=f"fb:bad:{lead_id}"),
                 ]
             )
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -59,17 +61,17 @@ class TelegramNotifier:
 
     async def send_apply_result(self, lead_url: str, result: ApplyResult) -> None:
         text = (
-            f"[APPLY {'OK' if result.ok else 'FAIL'}] {result.platform}\n"
-            f"Message: {result.message}\n"
-            f"Lead: {lead_url}\n"
-            f"Proposal: {result.proposal_url or '-'}\n"
-            f"Chat: {result.chat_url or '-'}"
+            f"[Отклик / Apply {'OK' if result.ok else 'FAIL'}] {result.platform}\n"
+            f"Сообщение / Message: {result.message}\n"
+            f"Заказ / Lead: {lead_url}\n"
+            f"Отклик / Proposal: {result.proposal_url or '-'}\n"
+            f"Чат / Chat: {result.chat_url or '-'}"
         )
-        rows = [[InlineKeyboardButton(text="Open job", url=lead_url)]]
+        rows = [[InlineKeyboardButton(text="Открыть заказ / Open job", url=lead_url)]]
         if result.proposal_url:
-            rows.append([InlineKeyboardButton(text="Open proposal", url=result.proposal_url)])
+            rows.append([InlineKeyboardButton(text="Открыть отклик / Open proposal", url=result.proposal_url)])
         if result.chat_url:
-            rows.append([InlineKeyboardButton(text="Open chat", url=result.chat_url)])
+            rows.append([InlineKeyboardButton(text="Открыть чат / Open chat", url=result.chat_url)])
 
         await self.bot.send_message(chat_id=self.chat_id, text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 

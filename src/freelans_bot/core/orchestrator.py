@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from freelans_bot.adapters.base import BasePlatformAdapter
 from freelans_bot.config.settings import settings
 from freelans_bot.integrations.telegram import TelegramNotifier
@@ -30,6 +32,7 @@ class Orchestrator:
             adapters=None,
             profile_text=None,
             portfolio_urls=None,
+            platform_profiles=None,
         )
 
     async def run_cycle_with_options(
@@ -40,6 +43,7 @@ class Orchestrator:
         adapters: list[BasePlatformAdapter] | None = None,
         profile_text: str | None = None,
         portfolio_urls: list[str] | None = None,
+        platform_profiles: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, int]:
         total_found = 0
         total_new = 0
@@ -86,11 +90,14 @@ class Orchestrator:
                         continue
 
                     examples = await self.store.get_success_examples(language=scored.lead.language, limit=4)
+                    platform_profile = (platform_profiles or {}).get(scored.lead.platform.lower(), {})
+                    effective_profile = self._compose_profile_text(profile_text, platform_profile)
+                    effective_portfolio = self._compose_portfolio_urls(portfolio_urls, platform_profile)
                     draft = await self.proposal_service.create(
                         scored.lead,
                         examples=examples,
-                        profile_text=profile_text,
-                        portfolio_urls=portfolio_urls,
+                        profile_text=effective_profile,
+                        portfolio_urls=effective_portfolio,
                     )
                     await self.store.save_proposal(lead_id, draft)
                     await self.notifier.send_draft(draft, lead_id=lead_id)
@@ -139,3 +146,52 @@ class Orchestrator:
             "new": total_new,
             "applied": total_applied,
         }
+
+    def _compose_profile_text(
+        self,
+        base_profile: str | None,
+        platform_profile: dict[str, str],
+    ) -> str:
+        chunks: list[str] = []
+        base = (base_profile or "").strip()
+        if base:
+            chunks.append(base)
+
+        name = (platform_profile.get("name") or "").strip()
+        headline = (platform_profile.get("headline") or "").strip()
+        resume = (platform_profile.get("resume") or "").strip()
+        rates = (platform_profile.get("rates") or "").strip()
+
+        platform_lines: list[str] = []
+        if name:
+            platform_lines.append(f"Platform name: {name}")
+        if headline:
+            platform_lines.append(f"Platform headline: {headline}")
+        if resume:
+            platform_lines.append(f"Platform resume: {resume}")
+        if rates:
+            platform_lines.append(f"Rates: {rates}")
+        if platform_lines:
+            chunks.append("\n".join(platform_lines))
+
+        return "\n\n".join(chunks).strip()
+
+    def _compose_portfolio_urls(
+        self,
+        base_urls: list[str] | None,
+        platform_profile: dict[str, str],
+    ) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for url in base_urls or []:
+            cleaned = url.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                merged.append(cleaned)
+        raw_platform = platform_profile.get("portfolio_urls", "")
+        for url in re.split(r"[,\n]", raw_platform):
+            cleaned = url.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                merged.append(cleaned)
+        return merged

@@ -85,6 +85,14 @@ class SQLiteStore:
                   value TEXT NOT NULL,
                   updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS platform_profile (
+                  platform TEXT NOT NULL,
+                  field TEXT NOT NULL,
+                  value TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY(platform, field)
+                );
                 """
             )
             await db.commit()
@@ -385,5 +393,57 @@ class SQLiteStore:
                   updated_at = excluded.updated_at
                 """,
                 (normalized, value.strip(), datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+
+    async def get_platform_profile(self, platform: str) -> dict[str, str]:
+        normalized_platform = platform.strip().lower()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT field, value FROM platform_profile WHERE platform = ?",
+                (normalized_platform,),
+            )
+            rows = await cur.fetchall()
+        result: dict[str, str] = {}
+        for row in rows:
+            result[str(row["field"])] = str(row["value"])
+        return result
+
+    async def get_all_platform_profiles(self) -> dict[str, dict[str, str]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT platform, field, value FROM platform_profile")
+            rows = await cur.fetchall()
+        result: dict[str, dict[str, str]] = {}
+        for row in rows:
+            platform = str(row["platform"])
+            field = str(row["field"])
+            value = str(row["value"])
+            if platform not in result:
+                result[platform] = {}
+            result[platform][field] = value
+        return result
+
+    async def set_platform_profile_field(self, platform: str, field: str, value: str) -> None:
+        normalized_platform = platform.strip().lower()
+        normalized_field = field.strip().lower()
+        if normalized_field not in {"name", "headline", "resume", "portfolio_urls", "rates"}:
+            raise ValueError("Unknown platform profile field")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO platform_profile (platform, field, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(platform, field) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_platform,
+                    normalized_field,
+                    value.strip(),
+                    datetime.utcnow().isoformat(),
+                ),
             )
             await db.commit()
