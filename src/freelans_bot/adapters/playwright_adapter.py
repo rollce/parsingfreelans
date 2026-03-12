@@ -102,8 +102,10 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             full_url = urljoin(feed_url, row["url"])
             body = row.get("description") or ""
             published_at = datetime.now(timezone.utc)
-            if since and published_at <= since:
-                continue
+            if since:
+                since_cmp = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+                if published_at <= since_cmp:
+                    continue
             payload = f"{self.name}|{full_url}|{row['title']}"
             external_id = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
             language = detect_language(f"{row['title']}\n{body}")
