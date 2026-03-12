@@ -59,7 +59,9 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             await page.wait_for_selector(card_sel, timeout=settings.playwright_timeout_ms)
             rows: list[dict[str, str]] = await page.evaluate(
                 """
-                (selectors, maxItems) => {
+                (payload) => {
+                  const selectors = payload.selectors;
+                  const maxItems = payload.maxItems;
                   const cards = Array.from(document.querySelectorAll(selectors.card)).slice(0, maxItems);
                   return cards.map((card) => {
                     const q = (selector) => selector ? card.querySelector(selector) : null;
@@ -79,14 +81,16 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
                 }
                 """,
                 {
-                    "card": card_sel,
-                    "title": sel.get("title"),
-                    "url": sel.get("url"),
-                    "description": sel.get("description"),
-                    "budget": sel.get("budget"),
-                    "date": sel.get("date"),
+                    "selectors": {
+                        "card": card_sel,
+                        "title": sel.get("title"),
+                        "url": sel.get("url"),
+                        "description": sel.get("description"),
+                        "budget": sel.get("budget"),
+                        "date": sel.get("date"),
+                    },
+                    "maxItems": limit,
                 },
-                limit,
             )
         except PlaywrightTimeoutError:
             return []
