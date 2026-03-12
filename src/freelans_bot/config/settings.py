@@ -34,7 +34,16 @@ class Settings(BaseSettings):
 
     target_languages: str = "ru,en"
     keywords: str = "telegram bot,python,ai automation"
+    focus_keywords: str = (
+        "python,fastapi,django,flask,"
+        "telegram,телеграм,telegram bot,чат-бот,чатбот,"
+        "website,web site,web app,сайт,веб-сайт,лендинг,"
+        "automation,автоматизация,business process,workflow,"
+        "parser,парсер,парсинг,scraping,scraper,"
+        "api integration,интеграция api"
+    )
     negative_keywords: str = "casino,adult"
+    strict_topic_filter: bool = True
 
     freelancer_profile: str = ""
     portfolio_urls: str = ""
@@ -58,6 +67,10 @@ class Settings(BaseSettings):
     @property
     def negative_keyword_list(self) -> list[str]:
         return [x.strip().lower() for x in self.negative_keywords.split(",") if x.strip()]
+
+    @property
+    def focus_keyword_list(self) -> list[str]:
+        return [x.strip().lower() for x in self.focus_keywords.split(",") if x.strip()]
 
     @property
     def language_list(self) -> set[str]:

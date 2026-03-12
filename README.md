@@ -128,7 +128,9 @@ curl "http://127.0.0.1:8000/learning/examples?language=ru&limit=5"
 
 - `AUTO_APPLY=false` — полуавтомат (рекомендуется для старта).
 - `MIN_SCORE_TO_APPLY=0.45` — минимальный скор для автоотклика.
-- `KEYWORDS` / `NEGATIVE_KEYWORDS` — основной фильтр качества.
+- `KEYWORDS` / `NEGATIVE_KEYWORDS` — базовый фильтр качества.
+- `FOCUS_KEYWORDS` — фокус на тематике (Python, Telegram-боты, сайты, автоматизации).
+- `STRICT_TOPIC_FILTER=true` — строгий режим: лид без совпадений по `FOCUS_KEYWORDS` получает `score=0` и не отправляется в Telegram.
 - `FREELANCER_PROFILE`, `PORTFOLIO_URLS` — контекст для генерации отклика.
 - `LLM_PROVIDER=openrouter` — использовать OpenRouter.
 - `OPENROUTER_API_KEY` — ключ OpenRouter.

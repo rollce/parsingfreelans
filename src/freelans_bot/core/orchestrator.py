@@ -70,7 +70,6 @@ class Orchestrator:
                         continue
 
                     total_new += 1
-                    await self.notifier.send_lead_scored(scored, lead_id=lead_id)
 
                     if scored.score < settings.min_score_to_apply:
                         await self.store.mark_skipped(lead_id, "score below threshold")
@@ -80,6 +79,8 @@ class Orchestrator:
                             {"score": scored.score, "threshold": settings.min_score_to_apply},
                         )
                         continue
+
+                    await self.notifier.send_lead_scored(scored, lead_id=lead_id)
 
                     if not should_generate:
                         continue
