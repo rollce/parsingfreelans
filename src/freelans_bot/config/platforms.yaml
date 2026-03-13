@@ -70,10 +70,10 @@ kwork:
     max_pages: 10
   session_file: kwork.json
   selectors:
-    card: ".wants-card, .project-card, article"
-    title: "h2 a, h3 a, .wants-card__title a"
-    url: "h2 a, h3 a, .wants-card__title a"
-    description: ".wants-card__description, .description"
+    card: ".want-card, .wants-card, .project-card, article"
+    title: ".wants-card__header-title a, .wants-card__header-title, h2 a, h3 a"
+    url: ".wants-card__header-title a, a[href*='/projects/']"
+    description: ".wants-card__description-text, .wants-card__description, .description"
     budget: ".wants-card__price, .price"
     date: "time, .date"
   apply:
