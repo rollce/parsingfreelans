@@ -172,6 +172,8 @@ class Worker:
     async def _get_enabled_adapters(self) -> list[BasePlatformAdapter]:
         result: list[BasePlatformAdapter] = []
         for adapter in self.orchestrator.adapters:
+            if not self._session_file_path(adapter.name).exists():
+                continue
             default_enabled = self.platform_defaults.get(adapter.name, True)
             enabled = await self.store.get_runtime_flag(
                 f"platform:{adapter.name}:enabled",
