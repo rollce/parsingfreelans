@@ -42,12 +42,27 @@ async def health() -> dict[str, str]:
 async def stats() -> dict:
     if not worker:
         return {"error": "worker is not started"}
+    filters = await worker._get_effective_filters()
+    scan = await worker._get_effective_scan_settings()
+    language_mode = await worker._get_effective_language_mode()
+    min_score = float(filters["min_score"])
     data = await worker.store.stats()
     data["pending_delivery"] = await worker.store.count_pending_lead_notifications(
-        min_score=settings.min_score_to_apply,
+        min_score=min_score,
         exclude_skipped=True,
         max_attempts=settings.telegram_notify_max_attempts,
     )
+    data["min_score"] = min_score
+    data["keywords"] = list(filters["keywords"])
+    data["negative_keywords"] = list(filters["negative_keywords"])
+    data["scan_interval_seconds"] = int(scan["interval_seconds"])
+    data["scan_max_pages"] = int(scan["max_pages"])
+    data["scan_max_leads"] = int(scan["max_leads"])
+    data["notify_burst_limit"] = int(scan["burst_limit"])
+    data["notify_burst_window_minutes"] = int(scan["burst_window_minutes"])
+    data["language_mode"] = str(language_mode["mode"])
+    data["language_mode_label"] = str(language_mode["label"])
+    data["target_languages"] = list(language_mode["languages"])
     data["platforms"] = await worker.store.get_platform_runtime()
     data["paused"] = worker.paused
     data["auto_apply"] = worker.auto_apply
@@ -64,14 +79,15 @@ async def events(limit: int = 30) -> list[dict]:
 @app.get("/leads")
 async def leads(
     limit: int = 20,
-    min_score: float = settings.min_score_to_apply,
+    min_score: float | None = None,
     exclude_skipped: bool = True,
 ) -> list[dict]:
     if not worker:
         return []
+    effective_min_score = float((await worker._get_effective_filters())["min_score"]) if min_score is None else min_score
     return await worker.store.recent_leads(
         limit=min(limit, 100),
-        min_score=max(0.0, min_score),
+        min_score=max(0.0, effective_min_score),
         exclude_skipped=exclude_skipped,
     )
 

@@ -10,7 +10,13 @@ class BasePlatformAdapter(ABC):
     name: str
 
     @abstractmethod
-    async def fetch_new_leads(self, since: datetime | None, limit: int) -> list[Lead]:
+    async def fetch_new_leads(
+        self,
+        since: datetime | None,
+        limit: int,
+        *,
+        max_pages: int | None = None,
+    ) -> list[Lead]:
         raise NotImplementedError
 
     @abstractmethod

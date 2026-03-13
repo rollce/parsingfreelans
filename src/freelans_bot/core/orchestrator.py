@@ -44,6 +44,9 @@ class Orchestrator:
         profile_text: str | None = None,
         portfolio_urls: list[str] | None = None,
         platform_profiles: dict[str, dict[str, str]] | None = None,
+        min_score_to_apply: float | None = None,
+        max_leads_per_platform: int | None = None,
+        max_pages_per_platform: int | None = None,
     ) -> dict[str, int]:
         total_found = 0
         total_new = 0
@@ -52,6 +55,13 @@ class Orchestrator:
         should_apply = settings.auto_apply if auto_apply is None else auto_apply
         should_generate = auto_generate_drafts or should_apply
         active_adapters = adapters if adapters is not None else self.adapters
+        score_threshold = settings.min_score_to_apply if min_score_to_apply is None else max(0.0, min_score_to_apply)
+        leads_limit = settings.max_leads_per_platform if max_leads_per_platform is None else max(1, max_leads_per_platform)
+        pages_limit = (
+            settings.max_pages_per_platform_scan
+            if max_pages_per_platform is None
+            else max(1, max_pages_per_platform)
+        )
 
         for adapter in active_adapters:
             platform_found = 0
@@ -61,7 +71,8 @@ class Orchestrator:
                 since = await self.store.get_last_seen_time(adapter.name)
                 leads = await adapter.fetch_new_leads(
                     since=since,
-                    limit=settings.max_leads_per_platform,
+                    limit=leads_limit,
+                    max_pages=pages_limit,
                 )
                 platform_found = len(leads)
                 total_found += len(leads)
@@ -81,12 +92,12 @@ class Orchestrator:
                     total_new += 1
                     platform_new += 1
 
-                    if scored.score < settings.min_score_to_apply:
+                    if scored.score < score_threshold:
                         await self.store.mark_skipped(lead_id, "score below apply threshold")
                         await self.store.record_event(
                             lead_id,
                             "lead_skipped",
-                            {"score": scored.score, "threshold": settings.min_score_to_apply},
+                            {"score": scored.score, "threshold": score_threshold},
                         )
                         continue
 

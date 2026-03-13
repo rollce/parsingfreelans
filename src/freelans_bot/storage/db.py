@@ -465,6 +465,30 @@ class SQLiteStore:
             row = await cur.fetchone()
             return int(row["cnt"] if row else 0)
 
+    async def recent_delivery_counts_by_platform(self, *, window_minutes: int) -> dict[str, int]:
+        minutes = max(1, int(window_minutes))
+        cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT platform, COUNT(*) AS cnt
+                FROM leads
+                WHERE notified_at IS NOT NULL
+                  AND notified_at >= ?
+                GROUP BY platform
+                """,
+                (cutoff,),
+            )
+            rows = await cur.fetchall()
+        out: dict[str, int] = {}
+        for row in rows:
+            platform = str(row["platform"] or "").strip().lower()
+            if not platform:
+                continue
+            out[platform] = int(row["cnt"] or 0)
+        return out
+
     async def update_platform_runtime(
         self,
         *,

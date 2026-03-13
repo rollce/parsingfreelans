@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     telegram_notify_batch_size: int = 8
     telegram_notify_retry_after_seconds: int = 45
     telegram_notify_max_attempts: int = 200
+    telegram_platform_burst_limit: int = 12
+    telegram_platform_burst_window_minutes: int = 10
 
     llm_provider: str = "openrouter"
 

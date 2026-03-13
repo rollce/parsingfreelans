@@ -24,6 +24,60 @@ from freelans_bot.utils.text import compact
 
 
 class Worker:
+    FILTER_RUNTIME_KEYS = {
+        "min_score": "filter:min_score",
+        "keywords": "filter:keywords",
+        "negative_keywords": "filter:negative_keywords",
+    }
+
+    FILTER_INPUT_HINTS = {
+        "min_score": "Отправь число от 0 до 1. Например: 0.45\nДля сброса: default",
+        "keywords": "Отправь ключевые слова через запятую или с новой строки.\nДля сброса: default",
+        "negative_keywords": "Отправь минус-слова через запятую или с новой строки.\nДля сброса: default",
+    }
+
+    FILTER_LABELS = {
+        "min_score": "Минимальный score",
+        "keywords": "Ключевые слова",
+        "negative_keywords": "Минус-слова",
+    }
+
+    SCAN_RUNTIME_KEYS = {
+        "interval_seconds": "scan:interval_seconds",
+        "max_pages": "scan:max_pages",
+        "max_leads": "scan:max_leads",
+        "burst_limit": "notify:burst_limit",
+        "burst_window_minutes": "notify:burst_window_minutes",
+    }
+
+    SCAN_INPUT_HINTS = {
+        "interval_seconds": "Отправь интервал в секундах (3..120).\nДля сброса: default",
+        "max_pages": "Отправь глубину страниц на биржу (1..30).\nДля сброса: default",
+        "max_leads": "Отправь лимит лидов на биржу за цикл (1..200).\nДля сброса: default",
+        "burst_limit": "Отправь лимит anti-flood (0..200 лидов, 0 = выкл).\nДля сброса: default",
+        "burst_window_minutes": "Отправь окно anti-flood в минутах (1..180).\nДля сброса: default",
+    }
+
+    SCAN_LABELS = {
+        "interval_seconds": "Интервал сканирования",
+        "max_pages": "Глубина страниц",
+        "max_leads": "Лимит лидов",
+        "burst_limit": "Лимит anti-flood",
+        "burst_window_minutes": "Окно anti-flood",
+    }
+
+    LANGUAGE_RUNTIME_KEY = "filter:language_mode"
+    LANGUAGE_MODES = {
+        "ru": ("ru",),
+        "en": ("en",),
+        "mixed": ("ru", "en"),
+    }
+    LANGUAGE_LABELS = {
+        "ru": "Только RU",
+        "en": "Только EN",
+        "mixed": "RU + EN",
+    }
+
     GLOBAL_PROFILE_HINTS = {
         "name": "Отправь имя для профиля.",
         "resume": "Отправь текст общего резюме.",
@@ -158,6 +212,17 @@ class Worker:
         profile_text = (profile.get("resume") or settings.freelancer_profile).strip()
         portfolio_urls = self._portfolio_urls(profile.get("portfolio_urls", "")) or settings.portfolio_list
         platform_profiles = await self.store.get_all_platform_profiles()
+        filters = await self._get_effective_filters()
+        scan_settings = await self._get_effective_scan_settings()
+        language_mode = await self._get_effective_language_mode()
+        min_score_to_apply = float(filters["min_score"])
+        self.orchestrator.scorer = LeadScorer(
+            keywords=list(filters["keywords"]),
+            negative_keywords=list(filters["negative_keywords"]),
+            focus_keywords=settings.focus_keyword_list,
+            strict_topic_filter=settings.strict_topic_filter,
+            target_languages=set(language_mode["languages"]),
+        )
         runtime_before = await self.store.get_platform_runtime()
 
         summary = await self.orchestrator.run_cycle_with_options(
@@ -167,6 +232,9 @@ class Worker:
             profile_text=profile_text,
             portfolio_urls=portfolio_urls,
             platform_profiles=platform_profiles,
+            min_score_to_apply=min_score_to_apply,
+            max_leads_per_platform=int(scan_settings["max_leads"]),
+            max_pages_per_platform=int(scan_settings["max_pages"]),
         )
         platform_rows = summary.get("platforms", [])
         for row in platform_rows:
@@ -197,6 +265,12 @@ class Worker:
             "applied": summary["applied"],
             "paused": self.paused,
             "auto_apply": self.auto_apply,
+            "scan_interval_seconds": int(scan_settings["interval_seconds"]),
+            "scan_max_pages": int(scan_settings["max_pages"]),
+            "scan_max_leads": int(scan_settings["max_leads"]),
+            "notify_burst_limit": int(scan_settings["burst_limit"]),
+            "notify_burst_window_minutes": int(scan_settings["burst_window_minutes"]),
+            "language_mode": str(language_mode["mode"]),
             "enabled_platforms": [a.name for a in adapters],
             "platforms": platform_rows,
         }
@@ -214,26 +288,62 @@ class Worker:
             )
 
     async def _dispatch_pending_lead_notifications(self) -> int:
+        batch_limit = max(1, int(settings.telegram_notify_batch_size))
+        fetch_limit = max(batch_limit * 5, batch_limit)
+        scan_settings = await self._get_effective_scan_settings()
         pending = await self.store.pending_lead_notifications(
-            limit=settings.telegram_notify_batch_size,
-            min_score=settings.min_score_to_apply,
+            limit=fetch_limit,
+            min_score=float((await self._get_effective_filters())["min_score"]),
             exclude_skipped=True,
             retry_after_seconds=settings.telegram_notify_retry_after_seconds,
             max_attempts=settings.telegram_notify_max_attempts,
         )
+        burst_limit = max(0, int(scan_settings["burst_limit"]))
+        burst_window_minutes = max(1, int(scan_settings["burst_window_minutes"]))
+        recent_by_platform = (
+            await self.store.recent_delivery_counts_by_platform(window_minutes=burst_window_minutes)
+            if burst_limit > 0
+            else {}
+        )
+
         sent = 0
+        throttled_by_platform: dict[str, int] = {}
         for lead_id, scored in pending:
+            if sent >= batch_limit:
+                break
+            platform = (scored.lead.platform or "").strip().lower()
+            if burst_limit > 0:
+                already_sent = int(recent_by_platform.get(platform, 0))
+                if already_sent >= burst_limit:
+                    throttled_by_platform[platform] = throttled_by_platform.get(platform, 0) + 1
+                    continue
             try:
                 await self.notifier.send_lead_scored(scored, lead_id=lead_id)
                 await self.store.mark_lead_notified(lead_id)
                 await self.store.record_event(lead_id, "lead_delivered", {"score": scored.score})
                 sent += 1
+                if burst_limit > 0:
+                    recent_by_platform[platform] = int(recent_by_platform.get(platform, 0)) + 1
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 await self.store.mark_lead_notify_failed(lead_id, error)
                 await self.store.record_event(lead_id, "lead_delivery_failed", {"error": error})
+        if throttled_by_platform:
+            await self.store.record_event(
+                None,
+                "lead_delivery_throttled_batch",
+                {
+                    "window_minutes": burst_window_minutes,
+                    "limit_per_platform": burst_limit,
+                    "platforms": throttled_by_platform,
+                },
+            )
         if sent:
-            await self.store.record_event(None, "lead_delivery_batch", {"sent": sent, "requested": len(pending)})
+            await self.store.record_event(
+                None,
+                "lead_delivery_batch",
+                {"sent": sent, "requested": len(pending), "batch_limit": batch_limit},
+            )
         return sent
 
     async def _get_enabled_adapters(self) -> list[BasePlatformAdapter]:
@@ -257,7 +367,9 @@ class Worker:
         return None
 
     async def _wait_for_next_tick(self, elapsed_seconds: float = 0.0) -> None:
-        timeout = max(0.0, float(settings.poll_interval_seconds) - max(0.0, elapsed_seconds))
+        scan_settings = await self._get_effective_scan_settings()
+        interval = int(scan_settings["interval_seconds"])
+        timeout = max(0.0, float(interval) - max(0.0, elapsed_seconds))
         wait_stop = asyncio.create_task(self._stop_event.wait())
         wait_manual = asyncio.create_task(self._run_now_event.wait())
         try:
@@ -350,6 +462,12 @@ class Worker:
             await self._send_profile_menu(callback=callback)
         elif data == "menu:settings":
             await self._send_settings(callback=callback)
+        elif data == "menu:filters":
+            await self._send_filters_menu(callback=callback)
+        elif data == "menu:scan":
+            await self._send_scan_menu(callback=callback)
+        elif data == "menu:languages":
+            await self._send_language_menu(callback=callback)
         elif data == "act:cycle":
             self._run_now_event.set()
             await self._send_status(callback=callback, header="Ручной запуск цикла поставлен в очередь.")
@@ -376,6 +494,15 @@ class Worker:
         elif data.startswith("ed:"):
             field = data.split(":", 1)[1]
             await self._begin_global_profile_input(str(chat_id), field, callback=callback)
+        elif data.startswith("edf:"):
+            field = data.split(":", 1)[1]
+            await self._begin_filter_input(str(chat_id), field, callback=callback)
+        elif data.startswith("eds:"):
+            field = data.split(":", 1)[1]
+            await self._begin_scan_input(str(chat_id), field, callback=callback)
+        elif data.startswith("setlang:"):
+            mode = data.split(":", 1)[1].strip().lower()
+            await self._set_language_mode(mode, callback=callback)
         elif data.startswith("apf:"):
             parts = data.split(":", 2)
             if len(parts) != 3:
@@ -456,8 +583,12 @@ class Worker:
     async def _send_status(self, callback: CallbackQuery | None = None, header: str | None = None) -> None:
         stats = await self.store.stats()
         adapters = await self._get_enabled_adapters()
+        filters = await self._get_effective_filters()
+        scan_settings = await self._get_effective_scan_settings()
+        language_mode = await self._get_effective_language_mode()
+        min_score = float(filters["min_score"])
         pending_delivery = await self.store.count_pending_lead_notifications(
-            min_score=settings.min_score_to_apply,
+            min_score=min_score,
             exclude_skipped=True,
             max_attempts=settings.telegram_notify_max_attempts,
         )
@@ -468,6 +599,12 @@ class Worker:
             f"Пауза: {self._yes_no(self.paused)}\n"
             f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
             f"Активных платформ: {len(adapters)}\n"
+            f"Фильтр score >= {min_score:.2f}\n"
+            f"Языковой режим: {language_mode['label']}\n"
+            f"Интервал: {int(scan_settings['interval_seconds'])} сек\n"
+            f"Глубина: {int(scan_settings['max_pages'])} стр\n"
+            f"Лимит: {int(scan_settings['max_leads'])} лид/биржа\n"
+            f"Anti-flood: {int(scan_settings['burst_limit'])}/{int(scan_settings['burst_window_minutes'])}м на биржу\n"
             f"К отправке в Telegram: {pending_delivery}\n"
             f"Новые: {stats.get('new', 0)}\n"
             f"Черновики: {stats.get('drafted', 0)}\n"
@@ -502,9 +639,10 @@ class Worker:
         await self._render_menu(text, self._kb_main(), callback=callback)
 
     async def _send_recent_leads(self, callback: CallbackQuery | None = None) -> None:
+        min_score = float((await self._get_effective_filters())["min_score"])
         leads = await self.store.recent_leads(
             limit=8,
-            min_score=settings.min_score_to_apply,
+            min_score=min_score,
             exclude_skipped=True,
         )
         if not leads:
@@ -520,7 +658,7 @@ class Worker:
             )
             return
 
-        lines: list[str] = ["Последние вакансии:"]
+        lines: list[str] = [f"Последние вакансии (score >= {min_score:.2f}):"]
         keyboard_rows: list[list[InlineKeyboardButton]] = []
         for item in leads:
             published_text = self._format_lead_publication(item)
@@ -832,6 +970,16 @@ class Worker:
             )
             return
 
+        if len(parts) == 2 and parts[0] == "f":
+            field = parts[1]
+            await self._save_filter_input(chat_key=chat_key, field=field, value=value)
+            return
+
+        if len(parts) == 2 and parts[0] == "s":
+            field = parts[1]
+            await self._save_scan_input(chat_key=chat_key, field=field, value=value)
+            return
+
         if len(parts) == 2 and parts[0] == "g":
             field = parts[1]
             if field == "portfolio_urls":
@@ -874,22 +1022,342 @@ class Worker:
             inline_keyboard=[
                 [InlineKeyboardButton(text=pause_text, callback_data="toggle:pause")],
                 [InlineKeyboardButton(text=auto_text, callback_data="toggle:auto")],
+                [InlineKeyboardButton(text="Фильтр заказов", callback_data="menu:filters")],
+                [InlineKeyboardButton(text="Сканирование", callback_data="menu:scan")],
+                [InlineKeyboardButton(text="Языковой режим", callback_data="menu:languages")],
                 [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
             ]
         )
 
     async def _send_settings(self, callback: CallbackQuery | None = None) -> None:
+        filters = await self._get_effective_filters()
+        scan_settings = await self._get_effective_scan_settings()
+        language_mode = await self._get_effective_language_mode()
+        min_score = float(filters["min_score"])
+        keywords = list(filters["keywords"])
+        negative_keywords = list(filters["negative_keywords"])
         await self._render_menu(
             "Настройки:\n"
             f"Пауза: {self._yes_no(self.paused)}\n"
-            f"Автоотклик: {self._yes_no(self.auto_apply)}\n\n"
+            f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
+            f"Мин. score: {min_score:.2f}\n"
+            f"Язык: {language_mode['label']}\n"
+            f"Интервал: {int(scan_settings['interval_seconds'])} сек\n"
+            f"Глубина: {int(scan_settings['max_pages'])} стр\n"
+            f"Лимит: {int(scan_settings['max_leads'])} лид/биржа\n"
+            f"Anti-flood: {int(scan_settings['burst_limit'])}/{int(scan_settings['burst_window_minutes'])}м на биржу\n"
+            f"Ключевые: {len(keywords)}\n"
+            f"Минус-слова: {len(negative_keywords)}\n\n"
             "Если автоотклик выключен, бот только парсит и дает кнопку генерации.",
             self._kb_settings(),
             callback=callback,
         )
 
+    async def _send_filters_menu(self, callback: CallbackQuery | None = None, note: str = "") -> None:
+        filters = await self._get_effective_filters()
+        min_score = float(filters["min_score"])
+        keywords = list(filters["keywords"])
+        negative_keywords = list(filters["negative_keywords"])
+        text = (
+            f"{note + '\n' if note else ''}"
+            "Фильтр заказов:\n"
+            f"Минимальный score: {min_score:.2f}\n"
+            f"Ключевые слова: {self._keywords_preview(keywords)}\n"
+            f"Минус-слова: {self._keywords_preview(negative_keywords)}\n\n"
+            "Измени параметры фильтра через кнопки ниже."
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Изменить минимальный score", callback_data="edf:min_score")],
+                [InlineKeyboardButton(text="Изменить ключевые", callback_data="edf:keywords")],
+                [InlineKeyboardButton(text="Изменить минус-слова", callback_data="edf:negative_keywords")],
+                [InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")],
+            ]
+        )
+        await self._render_menu(text, kb, callback=callback)
+
+    async def _begin_filter_input(
+        self,
+        chat_key: str,
+        field: str,
+        callback: CallbackQuery | None = None,
+    ) -> None:
+        if field not in self.FILTER_INPUT_HINTS:
+            await self._send_filters_menu(callback=callback)
+            return
+        self._pending_profile_input[chat_key] = f"f:{field}"
+        label = self.FILTER_LABELS[field]
+        hint = self.FILTER_INPUT_HINTS[field]
+        await self._render_menu(
+            f"Режим ввода: {label}\n{hint}\n\n"
+            "Отправь одно текстовое сообщение.",
+            InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu:filters")]]
+            ),
+            callback=callback,
+        )
+
+    async def _send_scan_menu(self, callback: CallbackQuery | None = None, note: str = "") -> None:
+        scan = await self._get_effective_scan_settings()
+        text = (
+            f"{note + '\n' if note else ''}"
+            "Сканирование:\n"
+            f"Интервал между биржами: {int(scan['interval_seconds'])} сек\n"
+            f"Глубина обхода: {int(scan['max_pages'])} стр/биржа\n"
+            f"Лимит лидов: {int(scan['max_leads'])} на биржу\n\n"
+            f"Anti-flood: {int(scan['burst_limit'])} лидов / {int(scan['burst_window_minutes'])} мин\n\n"
+            "Измени параметры через кнопки ниже."
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Изменить интервал", callback_data="eds:interval_seconds")],
+                [InlineKeyboardButton(text="Изменить глубину", callback_data="eds:max_pages")],
+                [InlineKeyboardButton(text="Изменить лимит лидов", callback_data="eds:max_leads")],
+                [InlineKeyboardButton(text="Изменить лимит anti-flood", callback_data="eds:burst_limit")],
+                [InlineKeyboardButton(text="Изменить окно anti-flood", callback_data="eds:burst_window_minutes")],
+                [InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")],
+            ]
+        )
+        await self._render_menu(text, kb, callback=callback)
+
+    async def _begin_scan_input(
+        self,
+        chat_key: str,
+        field: str,
+        callback: CallbackQuery | None = None,
+    ) -> None:
+        if field not in self.SCAN_INPUT_HINTS:
+            await self._send_scan_menu(callback=callback)
+            return
+        self._pending_profile_input[chat_key] = f"s:{field}"
+        label = self.SCAN_LABELS[field]
+        hint = self.SCAN_INPUT_HINTS[field]
+        await self._render_menu(
+            f"Режим ввода: {label}\n{hint}\n\n"
+            "Отправь одно текстовое сообщение.",
+            InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu:scan")]]
+            ),
+            callback=callback,
+        )
+
+    async def _send_language_menu(self, callback: CallbackQuery | None = None, note: str = "") -> None:
+        mode_data = await self._get_effective_language_mode()
+        current_mode = str(mode_data["mode"])
+        current_label = str(mode_data["label"])
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=self._mode_button_text("ru", current_mode), callback_data="setlang:ru")],
+                [InlineKeyboardButton(text=self._mode_button_text("en", current_mode), callback_data="setlang:en")],
+                [
+                    InlineKeyboardButton(
+                        text=self._mode_button_text("mixed", current_mode),
+                        callback_data="setlang:mixed",
+                    )
+                ],
+                [InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")],
+            ]
+        )
+        text = (
+            f"{note + '\n' if note else ''}"
+            "Языковой режим:\n"
+            f"Текущий: {current_label}\n\n"
+            "Режим влияет на приоритезацию лидов по языку заказчика."
+        )
+        await self._render_menu(text, kb, callback=callback)
+
+    async def _set_language_mode(self, mode: str, callback: CallbackQuery | None = None) -> None:
+        normalized = mode.strip().lower()
+        if normalized not in self.LANGUAGE_MODES:
+            await self._send_language_menu(callback=callback, note="Неизвестный режим языка.")
+            return
+        await self.store.set_runtime_value(self.LANGUAGE_RUNTIME_KEY, normalized)
+        label = self.LANGUAGE_LABELS.get(normalized, normalized)
+        await self._send_language_menu(
+            callback=callback,
+            note=f"Сохранено: языковой режим = {label}",
+        )
+
+    def _mode_button_text(self, mode: str, current_mode: str) -> str:
+        label = self.LANGUAGE_LABELS.get(mode, mode)
+        if mode == current_mode:
+            return f"● {label}"
+        return label
+
     def _portfolio_urls(self, raw: str) -> list[str]:
         return [x.strip() for x in re.split(r"[,\n]", raw) if x.strip()]
+
+    async def _save_filter_input(self, *, chat_key: str, field: str, value: str) -> None:
+        normalized_field = field.strip().lower()
+        if normalized_field not in self.FILTER_RUNTIME_KEYS:
+            self._pending_profile_input.pop(chat_key, None)
+            await self.notifier.send_text("Неизвестный фильтр", reply_markup=self._kb_main())
+            return
+
+        runtime_key = self.FILTER_RUNTIME_KEYS[normalized_field]
+        lowered = value.strip().lower()
+        reset_requested = lowered in {"default", "по умолчанию", "сброс", "reset", "clear"}
+
+        if normalized_field == "min_score":
+            if reset_requested:
+                await self.store.set_runtime_value(runtime_key, "")
+                self._pending_profile_input.pop(chat_key, None)
+                await self._send_filters_menu(note="Фильтр score сброшен к значению по умолчанию.")
+                return
+            try:
+                parsed = float(value.replace(",", "."))
+            except ValueError:
+                await self.notifier.send_text("Нужно число от 0 до 1. Пример: 0.45")
+                return
+            if not (0.0 <= parsed <= 1.0):
+                await self.notifier.send_text("Нужно число в диапазоне 0..1.")
+                return
+            await self.store.set_runtime_value(runtime_key, f"{parsed:.3f}".rstrip("0").rstrip("."))
+            self._pending_profile_input.pop(chat_key, None)
+            await self._send_filters_menu(note=f"Сохранено: минимальный score = {parsed:.2f}")
+            return
+
+        if reset_requested:
+            await self.store.set_runtime_value(runtime_key, "")
+            self._pending_profile_input.pop(chat_key, None)
+            label = self.FILTER_LABELS.get(normalized_field, normalized_field)
+            await self._send_filters_menu(note=f"Сброшено: {label}")
+            return
+
+        words = self._keywords_from_text(value)
+        if not words:
+            await self.notifier.send_text("Список пустой. Добавь хотя бы одно слово или напиши default для сброса.")
+            return
+        await self.store.set_runtime_value(runtime_key, ",".join(words))
+        self._pending_profile_input.pop(chat_key, None)
+        label = self.FILTER_LABELS.get(normalized_field, normalized_field)
+        await self._send_filters_menu(note=f"Сохранено: {label} ({len(words)})")
+
+    async def _save_scan_input(self, *, chat_key: str, field: str, value: str) -> None:
+        normalized_field = field.strip().lower()
+        if normalized_field not in self.SCAN_RUNTIME_KEYS:
+            self._pending_profile_input.pop(chat_key, None)
+            await self.notifier.send_text("Неизвестная настройка сканирования", reply_markup=self._kb_main())
+            return
+
+        lowered = value.strip().lower()
+        reset_requested = lowered in {"default", "по умолчанию", "сброс", "reset", "clear"}
+        runtime_key = self.SCAN_RUNTIME_KEYS[normalized_field]
+
+        if reset_requested:
+            await self.store.set_runtime_value(runtime_key, "")
+            self._pending_profile_input.pop(chat_key, None)
+            label = self.SCAN_LABELS.get(normalized_field, normalized_field)
+            await self._send_scan_menu(note=f"Сброшено: {label}")
+            return
+
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            await self.notifier.send_text("Нужно целое число. Пример: 5")
+            return
+
+        if normalized_field == "interval_seconds":
+            clamped = max(3, min(120, parsed))
+        elif normalized_field == "max_pages":
+            clamped = max(1, min(30, parsed))
+        elif normalized_field == "max_leads":
+            clamped = max(1, min(200, parsed))
+        elif normalized_field == "burst_limit":
+            clamped = max(0, min(200, parsed))
+        else:
+            clamped = max(1, min(180, parsed))
+
+        await self.store.set_runtime_value(runtime_key, str(clamped))
+        self._pending_profile_input.pop(chat_key, None)
+        label = self.SCAN_LABELS.get(normalized_field, normalized_field)
+        await self._send_scan_menu(note=f"Сохранено: {label} = {clamped}")
+
+    async def _get_effective_filters(self) -> dict[str, object]:
+        min_score = settings.min_score_to_apply
+        raw_min = await self.store.get_runtime_value(self.FILTER_RUNTIME_KEYS["min_score"])
+        if raw_min:
+            with suppress(ValueError):
+                min_score = min(1.0, max(0.0, float(raw_min.replace(",", "."))))
+
+        raw_kw = await self.store.get_runtime_value(self.FILTER_RUNTIME_KEYS["keywords"])
+        raw_neg = await self.store.get_runtime_value(self.FILTER_RUNTIME_KEYS["negative_keywords"])
+        keywords = self._keywords_from_text(raw_kw) if raw_kw else settings.keyword_list
+        negative_keywords = self._keywords_from_text(raw_neg) if raw_neg else settings.negative_keyword_list
+        return {
+            "min_score": float(min_score),
+            "keywords": keywords,
+            "negative_keywords": negative_keywords,
+        }
+
+    async def _get_effective_scan_settings(self) -> dict[str, int]:
+        interval_seconds = settings.poll_interval_seconds
+        max_pages = settings.max_pages_per_platform_scan
+        max_leads = settings.max_leads_per_platform
+        burst_limit = settings.telegram_platform_burst_limit
+        burst_window_minutes = settings.telegram_platform_burst_window_minutes
+
+        raw_interval = await self.store.get_runtime_value(self.SCAN_RUNTIME_KEYS["interval_seconds"])
+        if raw_interval:
+            with suppress(ValueError):
+                interval_seconds = int(raw_interval)
+
+        raw_pages = await self.store.get_runtime_value(self.SCAN_RUNTIME_KEYS["max_pages"])
+        if raw_pages:
+            with suppress(ValueError):
+                max_pages = int(raw_pages)
+
+        raw_leads = await self.store.get_runtime_value(self.SCAN_RUNTIME_KEYS["max_leads"])
+        if raw_leads:
+            with suppress(ValueError):
+                max_leads = int(raw_leads)
+
+        raw_burst_limit = await self.store.get_runtime_value(self.SCAN_RUNTIME_KEYS["burst_limit"])
+        if raw_burst_limit:
+            with suppress(ValueError):
+                burst_limit = int(raw_burst_limit)
+
+        raw_burst_window = await self.store.get_runtime_value(self.SCAN_RUNTIME_KEYS["burst_window_minutes"])
+        if raw_burst_window:
+            with suppress(ValueError):
+                burst_window_minutes = int(raw_burst_window)
+
+        return {
+            "interval_seconds": max(3, min(120, int(interval_seconds))),
+            "max_pages": max(1, min(30, int(max_pages))),
+            "max_leads": max(1, min(200, int(max_leads))),
+            "burst_limit": max(0, min(200, int(burst_limit))),
+            "burst_window_minutes": max(1, min(180, int(burst_window_minutes))),
+        }
+
+    async def _get_effective_language_mode(self) -> dict[str, object]:
+        mode = "ru"
+        raw_mode = await self.store.get_runtime_value(self.LANGUAGE_RUNTIME_KEY)
+        if raw_mode in self.LANGUAGE_MODES:
+            mode = str(raw_mode)
+        elif settings.language_list == {"en"}:
+            mode = "en"
+        elif settings.language_list == {"ru", "en"}:
+            mode = "mixed"
+        languages = tuple(self.LANGUAGE_MODES.get(mode, ("ru",)))
+        return {
+            "mode": mode,
+            "label": self.LANGUAGE_LABELS.get(mode, mode),
+            "languages": languages,
+        }
+
+    def _keywords_from_text(self, raw: str | None) -> list[str]:
+        if raw is None:
+            return []
+        return [x.strip().lower() for x in re.split(r"[,\n]", raw) if x.strip()]
+
+    def _keywords_preview(self, words: list[str], limit: int = 6) -> str:
+        if not words:
+            return "-"
+        if len(words) <= limit:
+            return ", ".join(words)
+        head = ", ".join(words[:limit])
+        return f"{head} ... (+{len(words) - limit})"
 
     def _session_file_path(self, platform: str) -> Path:
         cfg = self.platforms_cfg.get(platform, {})

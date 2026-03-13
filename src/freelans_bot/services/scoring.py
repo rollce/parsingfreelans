@@ -8,12 +8,20 @@ from freelans_bot.utils.text import detect_language
 
 
 class LeadScorer:
-    def __init__(self) -> None:
-        self.keywords = settings.keyword_list
-        self.negative = settings.negative_keyword_list
-        self.focus_keywords = settings.focus_keyword_list
-        self.strict_topic_filter = settings.strict_topic_filter
-        self.target_languages = settings.language_list
+    def __init__(
+        self,
+        *,
+        keywords: list[str] | None = None,
+        negative_keywords: list[str] | None = None,
+        focus_keywords: list[str] | None = None,
+        strict_topic_filter: bool | None = None,
+        target_languages: set[str] | None = None,
+    ) -> None:
+        self.keywords = keywords if keywords is not None else settings.keyword_list
+        self.negative = negative_keywords if negative_keywords is not None else settings.negative_keyword_list
+        self.focus_keywords = focus_keywords if focus_keywords is not None else settings.focus_keyword_list
+        self.strict_topic_filter = settings.strict_topic_filter if strict_topic_filter is None else strict_topic_filter
+        self.target_languages = target_languages if target_languages is not None else settings.language_list
 
     def score(self, lead: Lead) -> ScoredLead:
         text = f"{lead.title}\n{lead.description}".lower()

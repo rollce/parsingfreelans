@@ -49,7 +49,13 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         if playwright:
             await playwright.stop()
 
-    async def fetch_new_leads(self, since: datetime | None, limit: int) -> list[Lead]:
+    async def fetch_new_leads(
+        self,
+        since: datetime | None,
+        limit: int,
+        *,
+        max_pages: int | None = None,
+    ) -> list[Lead]:
         feed_url = self.config["feed_url"]
         sel = self.config.get("selectors", {})
         card_sel = sel.get("card")
@@ -59,7 +65,8 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         pagination_cfg = self.config.get("pagination", {})
         if not isinstance(pagination_cfg, dict):
             pagination_cfg = {}
-        max_pages = int(pagination_cfg.get("max_pages", settings.max_pages_per_platform_scan))
+        if max_pages is None:
+            max_pages = int(pagination_cfg.get("max_pages", settings.max_pages_per_platform_scan))
         if max_pages < 1:
             max_pages = 1
 
