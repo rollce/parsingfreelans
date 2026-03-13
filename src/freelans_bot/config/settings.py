@@ -10,9 +10,10 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"
     database_path: str = "./data/freelans.db"
-    poll_interval_seconds: int = 180
+    poll_interval_seconds: int = 5
     min_score_to_apply: float = 0.45
     max_leads_per_platform: int = 40
+    max_pages_per_platform_scan: int = 8
     max_applies_per_cycle: int = 30
     auto_apply: bool = True
 

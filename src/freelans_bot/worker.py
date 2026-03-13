@@ -86,6 +86,7 @@ class Worker:
         self.auto_apply: bool = settings.auto_apply
 
         self._pending_profile_input: dict[str, str] = {}
+        self._rotation_index: int = 0
 
     async def start(self) -> None:
         await self.store.init()
@@ -132,7 +133,20 @@ class Worker:
                 await asyncio.sleep(2)
 
     async def _run_cycle(self, trigger: str) -> None:
-        adapters = await self._get_enabled_adapters()
+        enabled_adapters = await self._get_enabled_adapters()
+        adapters = enabled_adapters
+        if trigger == "timer" and enabled_adapters:
+            idx = self._rotation_index % len(enabled_adapters)
+            adapters = [enabled_adapters[idx]]
+            self._rotation_index = (idx + 1) % len(enabled_adapters)
+
+        if not adapters:
+            await self.store.record_event(
+                None,
+                "cycle_no_adapters",
+                {"trigger": trigger},
+            )
+            return
         profile = await self.store.get_profile()
         profile_text = (profile.get("resume") or settings.freelancer_profile).strip()
         portfolio_urls = self._portfolio_urls(profile.get("portfolio_urls", "")) or settings.portfolio_list

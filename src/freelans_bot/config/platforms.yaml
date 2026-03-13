@@ -2,6 +2,10 @@ flru:
   display_name: FL.ru
   login_url: https://www.fl.ru/account/login/
   feed_url: https://www.fl.ru/projects/
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: flru.json
   selectors:
     card: "article, .b-post, .project-list-item"
@@ -29,6 +33,10 @@ freelance_ru:
   display_name: Freelance.ru
   login_url: https://freelance.ru/login
   feed_url: https://freelance.ru/projects
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: freelance_ru.json
   selectors:
     card: ".project-item, article, .task-item"
@@ -56,6 +64,10 @@ kwork:
   display_name: Kwork
   login_url: https://kwork.ru/login
   feed_url: https://kwork.ru/projects
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: kwork.json
   selectors:
     card: ".wants-card, .project-card, article"
@@ -83,6 +95,10 @@ workzilla:
   display_name: Workzilla
   login_url: https://work-zilla.com/login
   feed_url: https://work-zilla.com/tasks/
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: workzilla.json
   selectors:
     card: ".task-card, article, .card"
@@ -110,6 +126,10 @@ youdo:
   display_name: YouDo
   login_url: https://youdo.com/
   feed_url: https://youdo.com/frilans
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: youdo.json
   selectors:
     card: ".task-preview, article, .job-card"
@@ -137,6 +157,10 @@ yandex_uslugi:
   display_name: Yandex Uslugi
   login_url: https://passport.yandex.ru/auth
   feed_url: https://uslugi.yandex.ru/
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: yandex_uslugi.json
   selectors:
     card: "article, .service-card, .task-card"
@@ -164,6 +188,10 @@ freelancejob:
   display_name: FreelanceJob
   login_url: https://www.freelancejob.ru/
   feed_url: https://www.freelancejob.ru/projects/
+  pagination:
+    mode: query
+    param: page
+    max_pages: 10
   session_file: freelancejob.json
   selectors:
     card: ".prj, article, .project-card"

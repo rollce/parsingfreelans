@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+
+from dateutil import parser as dt_parser
 
 from playwright.async_api import BrowserContext, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
@@ -52,58 +55,64 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         if not card_sel:
             return []
 
+        pagination_cfg = self.config.get("pagination", {})
+        if not isinstance(pagination_cfg, dict):
+            pagination_cfg = {}
+        max_pages = int(pagination_cfg.get("max_pages", settings.max_pages_per_platform_scan))
+        if max_pages < 1:
+            max_pages = 1
+
         context = await self._new_context()
         page = await context.new_page()
+        rows: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
         try:
-            await page.goto(feed_url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
-            await page.wait_for_selector(card_sel, timeout=settings.playwright_timeout_ms)
-            rows: list[dict[str, str]] = await page.evaluate(
-                """
-                (payload) => {
-                  const selectors = payload.selectors;
-                  const maxItems = payload.maxItems;
-                  const cards = Array.from(document.querySelectorAll(selectors.card)).slice(0, maxItems);
-                  return cards.map((card) => {
-                    const q = (selector) => selector ? card.querySelector(selector) : null;
-                    const titleEl = q(selectors.title);
-                    const urlEl = q(selectors.url) || titleEl;
-                    const descEl = q(selectors.description);
-                    const budgetEl = q(selectors.budget);
-                    const dateEl = q(selectors.date);
-                    return {
-                      title: (titleEl?.textContent || '').trim(),
-                      url: (urlEl?.getAttribute('href') || '').trim(),
-                      description: (descEl?.textContent || '').trim(),
-                      budget: (budgetEl?.textContent || '').trim(),
-                      date: (dateEl?.textContent || '').trim(),
-                    };
-                  }).filter(x => x.title && x.url);
-                }
-                """,
-                {
-                    "selectors": {
-                        "card": card_sel,
-                        "title": sel.get("title"),
-                        "url": sel.get("url"),
-                        "description": sel.get("description"),
-                        "budget": sel.get("budget"),
-                        "date": sel.get("date"),
-                    },
-                    "maxItems": limit,
-                },
-            )
+            for page_num in range(1, max_pages + 1):
+                page_url = self._build_page_url(feed_url, page_num, pagination_cfg)
+                await page.goto(page_url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
+                try:
+                    await page.wait_for_selector(card_sel, timeout=settings.playwright_timeout_ms)
+                except PlaywrightTimeoutError:
+                    if page_num == 1:
+                        return []
+                    break
+
+                page_rows = await self._extract_rows(page=page, selectors=sel, limit=limit)
+                if not page_rows:
+                    break
+
+                new_count = 0
+                for row in page_rows:
+                    raw_url = (row.get("url") or "").strip()
+                    if not raw_url:
+                        continue
+                    full_url = urljoin(feed_url, raw_url)
+                    if full_url in seen_urls:
+                        continue
+                    seen_urls.add(full_url)
+                    row["url"] = full_url
+                    rows.append(row)
+                    new_count += 1
+                    if len(rows) >= limit:
+                        break
+
+                if len(rows) >= limit:
+                    break
+                if new_count == 0:
+                    break
         except PlaywrightTimeoutError:
             return []
         finally:
             await self._close_context(context)
 
         leads: list[Lead] = []
+        since_cmp = since if since and since.tzinfo else (since.replace(tzinfo=timezone.utc) if since else None)
+        now_utc = datetime.now(timezone.utc)
         for row in rows:
-            full_url = urljoin(feed_url, row["url"])
+            full_url = row["url"]
             body = row.get("description") or ""
-            published_at = datetime.now(timezone.utc)
-            if since:
-                since_cmp = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+            published_at = self._parse_published_at(row.get("date", ""), now_utc)
+            if since_cmp:
                 if published_at <= since_cmp:
                     continue
             payload = f"{self.name}|{full_url}|{row['title']}"
@@ -124,6 +133,119 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             )
 
         return leads
+
+    async def _extract_rows(
+        self,
+        *,
+        page: Any,
+        selectors: dict[str, Any],
+        limit: int,
+    ) -> list[dict[str, str]]:
+        return await page.evaluate(
+            """
+            (payload) => {
+              const selectors = payload.selectors;
+              const maxItems = payload.maxItems;
+              const cards = Array.from(document.querySelectorAll(selectors.card)).slice(0, maxItems);
+              return cards.map((card) => {
+                const q = (selector) => selector ? card.querySelector(selector) : null;
+                const titleEl = q(selectors.title);
+                const urlEl = q(selectors.url) || titleEl;
+                const descEl = q(selectors.description);
+                const budgetEl = q(selectors.budget);
+                const dateEl = q(selectors.date);
+                return {
+                  title: (titleEl?.textContent || '').trim(),
+                  url: (urlEl?.getAttribute('href') || '').trim(),
+                  description: (descEl?.textContent || '').trim(),
+                  budget: (budgetEl?.textContent || '').trim(),
+                  date: (dateEl?.textContent || '').trim(),
+                };
+              }).filter(x => x.title && x.url);
+            }
+            """,
+            {
+                "selectors": {
+                    "card": selectors.get("card"),
+                    "title": selectors.get("title"),
+                    "url": selectors.get("url"),
+                    "description": selectors.get("description"),
+                    "budget": selectors.get("budget"),
+                    "date": selectors.get("date"),
+                },
+                "maxItems": limit,
+            },
+        )
+
+    def _build_page_url(self, base_url: str, page_num: int, pagination_cfg: dict[str, Any]) -> str:
+        if page_num <= 1:
+            return base_url
+
+        mode = str(pagination_cfg.get("mode", "query")).strip().lower()
+        if mode == "template":
+            template = str(pagination_cfg.get("template", "")).strip()
+            if template:
+                return template.format(page=page_num)
+
+        param = str(pagination_cfg.get("param", "page")).strip() or "page"
+        parsed = urlparse(base_url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query[param] = str(page_num)
+        new_query = urlencode(query, doseq=True)
+        return urlunparse(parsed._replace(query=new_query))
+
+    def _parse_published_at(self, raw_date: str, now_utc: datetime) -> datetime:
+        text = " ".join((raw_date or "").strip().lower().split())
+        if not text:
+            return now_utc
+
+        m_minutes = re.search(r"(\\d+)\\s*мин", text)
+        if m_minutes:
+            return now_utc - timedelta(minutes=int(m_minutes.group(1)))
+
+        m_hours = re.search(r"(\\d+)\\s*час", text)
+        if m_hours:
+            return now_utc - timedelta(hours=int(m_hours.group(1)))
+
+        base_day: date | None = None
+        if "сегодня" in text:
+            base_day = now_utc.date()
+        elif "вчера" in text:
+            base_day = (now_utc - timedelta(days=1)).date()
+        else:
+            m_dm = re.search(r"(\\d{1,2})\\.(\\d{1,2})(?:\\.(\\d{2,4}))?", text)
+            if m_dm:
+                day = int(m_dm.group(1))
+                month = int(m_dm.group(2))
+                year_raw = m_dm.group(3)
+                year = now_utc.year if not year_raw else int(year_raw)
+                if year < 100:
+                    year += 2000
+                try:
+                    base_day = date(year, month, day)
+                except ValueError:
+                    base_day = None
+
+        if base_day:
+            m_time = re.search(r"(\\d{1,2}):(\\d{2})", text)
+            hour = int(m_time.group(1)) if m_time else 0
+            minute = int(m_time.group(2)) if m_time else 0
+            return datetime(
+                base_day.year,
+                base_day.month,
+                base_day.day,
+                hour,
+                minute,
+                tzinfo=timezone.utc,
+            )
+
+        try:
+            parsed = dt_parser.parse(text, dayfirst=True, fuzzy=True)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return now_utc
 
     async def sync_profile(self, profile_data: dict[str, str]) -> tuple[bool, str]:
         profile_cfg = self.config.get("profile", {})
