@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -114,13 +115,15 @@ class Worker:
 
     async def _loop(self) -> None:
         while not self._stop_event.is_set():
+            started_at = time.monotonic()
             try:
                 if self._run_now_event.is_set():
                     self._run_now_event.clear()
                     await self._run_cycle(trigger="manual")
                 elif not self.paused:
                     await self._run_cycle(trigger="timer")
-                await self._wait_for_next_tick()
+                elapsed = time.monotonic() - started_at
+                await self._wait_for_next_tick(elapsed_seconds=elapsed)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -203,13 +206,14 @@ class Worker:
                 return adapter
         return None
 
-    async def _wait_for_next_tick(self) -> None:
+    async def _wait_for_next_tick(self, elapsed_seconds: float = 0.0) -> None:
+        timeout = max(0.0, float(settings.poll_interval_seconds) - max(0.0, elapsed_seconds))
         wait_stop = asyncio.create_task(self._stop_event.wait())
         wait_manual = asyncio.create_task(self._run_now_event.wait())
         try:
             done, pending = await asyncio.wait(
                 {wait_stop, wait_manual},
-                timeout=settings.poll_interval_seconds,
+                timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:

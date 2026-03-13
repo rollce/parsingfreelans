@@ -51,6 +51,8 @@ class Settings(BaseSettings):
 
     playwright_headless: bool = True
     playwright_timeout_ms: int = 45_000
+    playwright_feed_timeout_ms: int = 15_000
+    playwright_cards_wait_timeout_ms: int = 5_000
     sessions_dir: str = "./state"
 
     enable_flru: bool = True

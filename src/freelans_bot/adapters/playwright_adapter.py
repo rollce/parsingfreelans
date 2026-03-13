@@ -62,6 +62,9 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         if max_pages < 1:
             max_pages = 1
 
+        feed_timeout_ms = max(1_000, min(settings.playwright_timeout_ms, settings.playwright_feed_timeout_ms))
+        cards_wait_timeout_ms = max(500, settings.playwright_cards_wait_timeout_ms)
+
         context = await self._new_context()
         page = await context.new_page()
         rows: list[dict[str, str]] = []
@@ -69,9 +72,9 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         try:
             for page_num in range(1, max_pages + 1):
                 page_url = self._build_page_url(feed_url, page_num, pagination_cfg)
-                await page.goto(page_url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
+                await page.goto(page_url, wait_until="domcontentloaded", timeout=feed_timeout_ms)
                 try:
-                    await page.wait_for_selector(card_sel, timeout=settings.playwright_timeout_ms)
+                    await page.wait_for_selector(card_sel, timeout=cards_wait_timeout_ms)
                 except PlaywrightTimeoutError:
                     if page_num == 1:
                         return []
@@ -111,9 +114,12 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         for row in rows:
             full_url = row["url"]
             body = row.get("description") or ""
-            published_at = self._parse_published_at(row.get("date", ""), now_utc)
+            published_at, has_precise_time = self._parse_published_at(row.get("date", ""), now_utc)
             if since_cmp:
-                if published_at <= since_cmp:
+                # Filter by time only if listing timestamp includes precise time.
+                # Many platforms expose only day-level dates ("сегодня"/"вчера"/dd.mm),
+                # which would otherwise hide fresh leads.
+                if has_precise_time and published_at <= since_cmp:
                     continue
             payload = f"{self.name}|{full_url}|{row['title']}"
             external_id = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
@@ -194,18 +200,20 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         new_query = urlencode(query, doseq=True)
         return urlunparse(parsed._replace(query=new_query))
 
-    def _parse_published_at(self, raw_date: str, now_utc: datetime) -> datetime:
+    def _parse_published_at(self, raw_date: str, now_utc: datetime) -> tuple[datetime, bool]:
         text = " ".join((raw_date or "").strip().lower().split())
         if not text:
-            return now_utc
+            return now_utc, False
 
-        m_minutes = re.search(r"(\\d+)\\s*мин", text)
+        has_explicit_time = bool(re.search(r"(\d{1,2}):(\d{2})", text))
+
+        m_minutes = re.search(r"(\d+)\s*мин", text)
         if m_minutes:
-            return now_utc - timedelta(minutes=int(m_minutes.group(1)))
+            return now_utc - timedelta(minutes=int(m_minutes.group(1))), True
 
-        m_hours = re.search(r"(\\d+)\\s*час", text)
+        m_hours = re.search(r"(\d+)\s*час", text)
         if m_hours:
-            return now_utc - timedelta(hours=int(m_hours.group(1)))
+            return now_utc - timedelta(hours=int(m_hours.group(1))), True
 
         base_day: date | None = None
         if "сегодня" in text:
@@ -213,7 +221,7 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         elif "вчера" in text:
             base_day = (now_utc - timedelta(days=1)).date()
         else:
-            m_dm = re.search(r"(\\d{1,2})\\.(\\d{1,2})(?:\\.(\\d{2,4}))?", text)
+            m_dm = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?", text)
             if m_dm:
                 day = int(m_dm.group(1))
                 month = int(m_dm.group(2))
@@ -227,10 +235,10 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
                     base_day = None
 
         if base_day:
-            m_time = re.search(r"(\\d{1,2}):(\\d{2})", text)
+            m_time = re.search(r"(\d{1,2}):(\d{2})", text)
             hour = int(m_time.group(1)) if m_time else 0
             minute = int(m_time.group(2)) if m_time else 0
-            return datetime(
+            dt = datetime(
                 base_day.year,
                 base_day.month,
                 base_day.day,
@@ -238,14 +246,15 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
                 minute,
                 tzinfo=timezone.utc,
             )
+            return dt, has_explicit_time
 
         try:
             parsed = dt_parser.parse(text, dayfirst=True, fuzzy=True)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
+            return parsed.astimezone(timezone.utc), has_explicit_time
         except Exception:
-            return now_utc
+            return now_utc, False
 
     async def sync_profile(self, profile_data: dict[str, str]) -> tuple[bool, str]:
         profile_cfg = self.config.get("profile", {})

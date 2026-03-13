@@ -152,6 +152,8 @@ curl "http://127.0.0.1:8000/learning/examples?language=ru&limit=5"
 - `POLL_INTERVAL_SECONDS=5` — интервал между площадками (round-robin).
 - `MIN_SCORE_TO_APPLY=0.45` — минимальный скор для автоотклика.
 - `MAX_PAGES_PER_PLATFORM_SCAN=8` — глубина обхода страниц на площадке.
+- `PLAYWRIGHT_FEED_TIMEOUT_MS=15000` — таймаут загрузки страницы ленты (не дает зависать на одной бирже).
+- `PLAYWRIGHT_CARDS_WAIT_TIMEOUT_MS=5000` — сколько ждать карточки заказов перед переходом к следующей площадке.
 - `KEYWORDS` / `NEGATIVE_KEYWORDS` — базовый фильтр качества.
 - `FOCUS_KEYWORDS` — фокус на тематике (Python, Telegram-боты, сайты, автоматизации).
 - `STRICT_TOPIC_FILTER=true` — строгий режим: лид без совпадений по `FOCUS_KEYWORDS` получает `score=0` и не отправляется в Telegram.
