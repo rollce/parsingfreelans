@@ -48,6 +48,7 @@ async def stats() -> dict:
         exclude_skipped=True,
         max_attempts=settings.telegram_notify_max_attempts,
     )
+    data["platforms"] = await worker.store.get_platform_runtime()
     data["paused"] = worker.paused
     data["auto_apply"] = worker.auto_apply
     return data

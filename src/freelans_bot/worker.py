@@ -167,6 +167,20 @@ class Worker:
             portfolio_urls=portfolio_urls,
             platform_profiles=platform_profiles,
         )
+        platform_rows = summary.get("platforms", [])
+        for row in platform_rows:
+            platform = str(row.get("platform") or "").strip().lower()
+            if not platform:
+                continue
+            found = int(row.get("found") or 0)
+            new = int(row.get("new") or 0)
+            error = str(row.get("error") or "").strip() or None
+            await self.store.update_platform_runtime(
+                platform=platform,
+                found=found,
+                new=new,
+                error=error,
+            )
 
         payload = {
             "trigger": trigger,
@@ -176,6 +190,7 @@ class Worker:
             "paused": self.paused,
             "auto_apply": self.auto_apply,
             "enabled_platforms": [a.name for a in adapters],
+            "platforms": platform_rows,
         }
         await self.store.record_event(None, "cycle_summary", payload)
         if trigger == "manual":
@@ -438,6 +453,7 @@ class Worker:
             exclude_skipped=True,
             max_attempts=settings.telegram_notify_max_attempts,
         )
+        platform_runtime = await self.store.get_platform_runtime()
         text = (
             f"{header + '\n' if header else ''}"
             "Статус:\n"
@@ -451,6 +467,30 @@ class Worker:
             f"Ошибки: {stats.get('failed', 0)}\n"
             f"Пропущено: {stats.get('skipped', 0)}"
         )
+        platform_lines: list[str] = ["", "Площадки:"]
+        for key in sorted(self.platforms_cfg.keys()):
+            cfg = self.platforms_cfg.get(key, {})
+            display = str(cfg.get("display_name", key))
+            runtime = platform_runtime.get(key, {})
+            state = self._platform_state_label(str(runtime.get("state", "unknown")))
+            found = int(runtime.get("last_found", 0) or 0)
+            new = int(runtime.get("last_new", 0) or 0)
+            last_ok = self._format_iso_dt(runtime.get("last_success_at"))
+
+            default_enabled = self.platform_defaults.get(key, True)
+            enabled = await self.store.get_runtime_flag(
+                f"platform:{key}:enabled",
+                default=default_enabled,
+            )
+            connected = self._session_file_path(key).exists()
+            platform_lines.append(
+                f"{display}: {state} | found={found} new={new} | ok={last_ok} | "
+                f"вкл={self._yes_no(enabled)} | сессия={self._yes_no(connected)}"
+            )
+            err = str(runtime.get("last_error") or "").strip()
+            if err and str(runtime.get("state", "")) == "error":
+                platform_lines.append(f"Ошибка {display}: {compact(err, 120)}")
+        text = f"{text}\n" + "\n".join(platform_lines)
         await self._render_menu(text, self._kb_main(), callback=callback)
 
     async def _send_recent_leads(self, callback: CallbackQuery | None = None) -> None:
@@ -904,6 +944,26 @@ class Worker:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M МСК")
+
+    def _platform_state_label(self, state: str) -> str:
+        normalized = (state or "").strip().lower()
+        if normalized == "ok":
+            return "OK"
+        if normalized == "error":
+            return "Ошибка"
+        return "Нет данных"
+
+    def _format_iso_dt(self, value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return raw
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(self._display_tz).strftime("%d.%m %H:%M")
 
     async def _generate_proposal_for_lead(
         self,

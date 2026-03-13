@@ -48,17 +48,22 @@ class Orchestrator:
         total_found = 0
         total_new = 0
         total_applied = 0
+        per_platform: list[dict[str, object]] = []
         should_apply = settings.auto_apply if auto_apply is None else auto_apply
         should_generate = auto_generate_drafts or should_apply
         active_adapters = adapters if adapters is not None else self.adapters
 
         for adapter in active_adapters:
+            platform_found = 0
+            platform_new = 0
+            platform_error: str | None = None
             try:
                 since = await self.store.get_last_seen_time(adapter.name)
                 leads = await adapter.fetch_new_leads(
                     since=since,
                     limit=settings.max_leads_per_platform,
                 )
+                platform_found = len(leads)
                 total_found += len(leads)
 
                 await self.store.record_event(
@@ -74,6 +79,7 @@ class Orchestrator:
                         continue
 
                     total_new += 1
+                    platform_new += 1
 
                     if scored.score < settings.min_score_to_apply:
                         await self.store.mark_skipped(lead_id, "score below apply threshold")
@@ -136,19 +142,30 @@ class Orchestrator:
                     )
                     total_applied += 1
             except Exception as exc:
+                platform_error = f"{type(exc).__name__}: {exc}"
                 await self.store.record_event(
                     None,
                     "adapter_error",
-                    {"platform": adapter.name, "error": f"{type(exc).__name__}: {exc}"},
+                    {"platform": adapter.name, "error": platform_error},
                 )
                 await self.notifier.send_text(
-                    f"[ERROR] platform={adapter.name} {type(exc).__name__}: {exc}"
+                    f"[ERROR] platform={adapter.name} {platform_error}"
+                )
+            finally:
+                per_platform.append(
+                    {
+                        "platform": adapter.name,
+                        "found": platform_found,
+                        "new": platform_new,
+                        "error": platform_error,
+                    }
                 )
 
         return {
             "found": total_found,
             "new": total_new,
             "applied": total_applied,
+            "platforms": per_platform,
         }
 
     def _compose_profile_text(

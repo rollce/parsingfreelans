@@ -97,6 +97,17 @@ class SQLiteStore:
                   updated_at TEXT NOT NULL,
                   PRIMARY KEY(platform, field)
                 );
+
+                CREATE TABLE IF NOT EXISTS platform_runtime (
+                  platform TEXT PRIMARY KEY,
+                  state TEXT NOT NULL DEFAULT 'unknown',
+                  last_success_at TEXT,
+                  last_error_at TEXT,
+                  last_error TEXT,
+                  last_found INTEGER NOT NULL DEFAULT 0,
+                  last_new INTEGER NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL
+                );
                 """
             )
             await self._ensure_leads_columns(db)
@@ -453,6 +464,94 @@ class SQLiteStore:
             )
             row = await cur.fetchone()
             return int(row["cnt"] if row else 0)
+
+    async def update_platform_runtime(
+        self,
+        *,
+        platform: str,
+        found: int,
+        new: int,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.utcnow().isoformat()
+        clean_platform = platform.strip().lower()
+        clean_error = (error or "").strip()[:700]
+        async with aiosqlite.connect(self.db_path) as db:
+            if clean_error:
+                await db.execute(
+                    """
+                    INSERT INTO platform_runtime (
+                      platform, state, last_success_at, last_error_at, last_error, last_found, last_new, updated_at
+                    ) VALUES (?, 'error', NULL, ?, ?, ?, ?, ?)
+                    ON CONFLICT(platform) DO UPDATE SET
+                      state = excluded.state,
+                      last_error_at = excluded.last_error_at,
+                      last_error = excluded.last_error,
+                      last_found = excluded.last_found,
+                      last_new = excluded.last_new,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        clean_platform,
+                        now,
+                        clean_error,
+                        max(0, found),
+                        max(0, new),
+                        now,
+                    ),
+                )
+            else:
+                await db.execute(
+                    """
+                    INSERT INTO platform_runtime (
+                      platform, state, last_success_at, last_error_at, last_error, last_found, last_new, updated_at
+                    ) VALUES (?, 'ok', ?, NULL, NULL, ?, ?, ?)
+                    ON CONFLICT(platform) DO UPDATE SET
+                      state = excluded.state,
+                      last_success_at = excluded.last_success_at,
+                      last_error_at = NULL,
+                      last_error = NULL,
+                      last_found = excluded.last_found,
+                      last_new = excluded.last_new,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        clean_platform,
+                        now,
+                        max(0, found),
+                        max(0, new),
+                        now,
+                    ),
+                )
+            await db.commit()
+
+    async def get_platform_runtime(self) -> dict[str, dict[str, object]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  platform, state, last_success_at, last_error_at, last_error,
+                  last_found, last_new, updated_at
+                FROM platform_runtime
+                ORDER BY platform
+                """
+            )
+            rows = await cur.fetchall()
+
+        out: dict[str, dict[str, object]] = {}
+        for row in rows:
+            key = str(row["platform"])
+            out[key] = {
+                "state": row["state"] or "unknown",
+                "last_success_at": row["last_success_at"],
+                "last_error_at": row["last_error_at"],
+                "last_error": row["last_error"],
+                "last_found": int(row["last_found"] or 0),
+                "last_new": int(row["last_new"] or 0),
+                "updated_at": row["updated_at"],
+            }
+        return out
 
     async def find_lead_id_by_url(self, url: str) -> int | None:
         async with aiosqlite.connect(self.db_path) as db:
