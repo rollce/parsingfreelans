@@ -148,9 +148,6 @@ class Orchestrator:
                     "adapter_error",
                     {"platform": adapter.name, "error": platform_error},
                 )
-                await self.notifier.send_text(
-                    f"[ERROR] platform={adapter.name} {platform_error}"
-                )
             finally:
                 per_platform.append(
                     {

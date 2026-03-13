@@ -154,6 +154,7 @@ curl "http://127.0.0.1:8000/learning/examples?language=ru&limit=5"
 - `TELEGRAM_NOTIFY_RETRY_AFTER_SECONDS=45` — пауза перед повторной отправкой неудачных уведомлений.
 - `TELEGRAM_NOTIFY_MAX_ATTEMPTS=200` — максимум попыток доставки для одного лида.
 - `/stats` показывает runtime по площадкам: `ok/error`, `last_success_at`, `last_found`, `last_new`.
+- При истекшей сессии площадки бот отправляет отдельное уведомление и помечает состояние как `Сессия истекла`.
 - `MIN_SCORE_TO_APPLY=0.45` — минимальный скор для автоотклика.
 - `MAX_PAGES_PER_PLATFORM_SCAN=8` — глубина обхода страниц на площадке.
 - `PLAYWRIGHT_FEED_TIMEOUT_MS=15000` — таймаут загрузки страницы ленты (не дает зависать на одной бирже).

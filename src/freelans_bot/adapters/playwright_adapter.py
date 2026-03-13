@@ -13,6 +13,7 @@ from playwright.async_api import BrowserContext, TimeoutError as PlaywrightTimeo
 from playwright.async_api import async_playwright
 
 from freelans_bot.adapters.base import BasePlatformAdapter
+from freelans_bot.adapters.errors import SessionExpiredError
 from freelans_bot.config.settings import settings
 from freelans_bot.core.models import ApplyResult, Lead
 from freelans_bot.utils.text import detect_language
@@ -73,9 +74,17 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             for page_num in range(1, max_pages + 1):
                 page_url = self._build_page_url(feed_url, page_num, pagination_cfg)
                 await page.goto(page_url, wait_until="domcontentloaded", timeout=feed_timeout_ms)
+                if await self._is_login_required(page=page, card_selector=card_sel):
+                    raise SessionExpiredError(
+                        f"SESSION_EXPIRED: platform={self.name} redirect/login detected on feed"
+                    )
                 try:
                     await page.wait_for_selector(card_sel, timeout=cards_wait_timeout_ms)
                 except PlaywrightTimeoutError:
+                    if await self._is_login_required(page=page, card_selector=card_sel):
+                        raise SessionExpiredError(
+                            f"SESSION_EXPIRED: platform={self.name} no access to feed, login required"
+                        )
                     if page_num == 1:
                         return []
                     break
@@ -200,6 +209,59 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         new_query = urlencode(query, doseq=True)
         return urlunparse(parsed._replace(query=new_query))
 
+    async def _is_login_required(self, *, page: Any, card_selector: str | None = None) -> bool:
+        login_url = str(self.config.get("login_url") or "").strip()
+        current_url = str(page.url or "").strip()
+
+        if self._is_url_related_to_login(current_url, login_url):
+            return True
+
+        if card_selector:
+            has_cards = await page.evaluate(
+                "(selector) => document.querySelectorAll(selector).length > 0",
+                card_selector,
+            )
+            if has_cards:
+                return False
+
+        return bool(
+            await page.evaluate(
+                """
+                () => {
+                  const hasPassword = !!document.querySelector("input[type='password']");
+                  const hasLoginForm = !!document.querySelector(
+                    "form[action*='login'], form[action*='auth'], input[name*='login'], input[name*='email']"
+                  );
+                  const txt = (document.body?.innerText || "").toLowerCase();
+                  const hasLoginText =
+                    txt.includes("войти") ||
+                    txt.includes("вход") ||
+                    txt.includes("авторизац") ||
+                    txt.includes("log in") ||
+                    txt.includes("sign in");
+                  return hasPassword || (hasLoginForm && hasLoginText);
+                }
+                """
+            )
+        )
+
+    def _is_url_related_to_login(self, current_url: str, login_url: str) -> bool:
+        cur = current_url.strip().lower()
+        login = login_url.strip().lower()
+        if not cur or not login:
+            return False
+        if cur.startswith(login):
+            return True
+        parsed_cur = urlparse(cur)
+        parsed_login = urlparse(login)
+        if parsed_cur.netloc and parsed_login.netloc and parsed_cur.netloc != parsed_login.netloc:
+            return False
+        cur_path = parsed_cur.path or ""
+        login_path = parsed_login.path or ""
+        if login_path and cur_path.startswith(login_path):
+            return True
+        return any(token in cur for token in ("/login", "/signin", "/auth", "passport.yandex.ru/auth"))
+
     def _parse_published_at(self, raw_date: str, now_utc: datetime) -> tuple[datetime, bool]:
         text = " ".join((raw_date or "").strip().lower().split())
         if not text:
@@ -280,6 +342,11 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         try:
             await page.goto(target_url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
             await page.wait_for_timeout(1000)
+            if await self._is_login_required(
+                page=page,
+                card_selector=None,
+            ):
+                return False, f"SESSION_EXPIRED: platform={self.name} требуется повторный вход"
 
             updated: list[str] = []
             missing: list[str] = []
@@ -345,6 +412,16 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         page = await context.new_page()
         try:
             await page.goto(lead.url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
+            if await self._is_login_required(
+                page=page,
+                card_selector=None,
+            ):
+                return ApplyResult(
+                    platform=self.name,
+                    lead_url=lead.url,
+                    ok=False,
+                    message=f"SESSION_EXPIRED: platform={self.name} требуется повторный вход",
+                )
 
             apply_button = apply_cfg.get("apply_button")
             if apply_button:

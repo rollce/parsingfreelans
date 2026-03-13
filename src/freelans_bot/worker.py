@@ -158,6 +158,7 @@ class Worker:
         profile_text = (profile.get("resume") or settings.freelancer_profile).strip()
         portfolio_urls = self._portfolio_urls(profile.get("portfolio_urls", "")) or settings.portfolio_list
         platform_profiles = await self.store.get_all_platform_profiles()
+        runtime_before = await self.store.get_platform_runtime()
 
         summary = await self.orchestrator.run_cycle_with_options(
             auto_apply=self.auto_apply,
@@ -177,6 +178,13 @@ class Worker:
             error = str(row.get("error") or "").strip() or None
             await self.store.update_platform_runtime(
                 platform=platform,
+                found=found,
+                new=new,
+                error=error,
+            )
+            await self._maybe_notify_platform_runtime_change(
+                platform=platform,
+                previous=runtime_before.get(platform),
                 found=found,
                 new=new,
                 error=error,
@@ -472,7 +480,8 @@ class Worker:
             cfg = self.platforms_cfg.get(key, {})
             display = str(cfg.get("display_name", key))
             runtime = platform_runtime.get(key, {})
-            state = self._platform_state_label(str(runtime.get("state", "unknown")))
+            err = str(runtime.get("last_error") or "").strip()
+            state = self._platform_state_label(str(runtime.get("state", "unknown")), err)
             found = int(runtime.get("last_found", 0) or 0)
             new = int(runtime.get("last_new", 0) or 0)
             last_ok = self._format_iso_dt(runtime.get("last_success_at"))
@@ -487,7 +496,6 @@ class Worker:
                 f"{display}: {state} | found={found} new={new} | ok={last_ok} | "
                 f"вкл={self._yes_no(enabled)} | сессия={self._yes_no(connected)}"
             )
-            err = str(runtime.get("last_error") or "").strip()
             if err and str(runtime.get("state", "")) == "error":
                 platform_lines.append(f"Ошибка {display}: {compact(err, 120)}")
         text = f"{text}\n" + "\n".join(platform_lines)
@@ -945,13 +953,70 @@ class Worker:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M МСК")
 
-    def _platform_state_label(self, state: str) -> str:
+    async def _maybe_notify_platform_runtime_change(
+        self,
+        *,
+        platform: str,
+        previous: dict[str, object] | None,
+        found: int,
+        new: int,
+        error: str | None,
+    ) -> None:
+        prev_state = str((previous or {}).get("state", "unknown"))
+        prev_error = str((previous or {}).get("last_error", "") or "").strip()
+        display = str(self.platforms_cfg.get(platform, {}).get("display_name", platform))
+
+        current_error = (error or "").strip()
+        if current_error:
+            if prev_state == "error" and prev_error == current_error:
+                return
+            if self._is_session_expired_error(current_error):
+                text = (
+                    f"Сессия истекла: {display}\n"
+                    "Нужен повторный вход. Открой Аккаунты, выбери площадку и переподключи сессию."
+                )
+            else:
+                text = f"Ошибка площадки {display}: {compact(current_error, 220)}"
+            await self.notifier.send_text(text, reply_markup=self._kb_main())
+            await self.store.record_event(
+                None,
+                "platform_runtime_alert",
+                {"platform": platform, "state": "error", "error": current_error},
+            )
+            return
+
+        if prev_state == "error":
+            await self.notifier.send_text(
+                f"Площадка снова в работе: {display}\n"
+                f"Найдено: {found} | Новых: {new}",
+                reply_markup=self._kb_main(),
+            )
+            await self.store.record_event(
+                None,
+                "platform_runtime_alert",
+                {"platform": platform, "state": "recovered", "found": found, "new": new},
+            )
+
+    def _platform_state_label(self, state: str, error: str = "") -> str:
         normalized = (state or "").strip().lower()
+        if normalized == "error" and self._is_session_expired_error(error):
+            return "Сессия истекла"
         if normalized == "ok":
             return "OK"
         if normalized == "error":
             return "Ошибка"
         return "Нет данных"
+
+    def _is_session_expired_error(self, error: str) -> bool:
+        text = (error or "").strip().lower()
+        if not text:
+            return False
+        return (
+            "session_expired" in text
+            or "login required" in text
+            or "requires re-authentication" in text
+            or "требуется повторный вход" in text
+        )
 
     def _format_iso_dt(self, value: object) -> str:
         raw = str(value or "").strip()
