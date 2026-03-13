@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     max_pages_per_platform_scan: int = 8
     max_applies_per_cycle: int = 30
     auto_apply: bool = True
+    auto_apply_hour_limit: int = 6
+    auto_apply_day_limit: int = 30
 
     telegram_bot_token: str
     telegram_chat_id: str

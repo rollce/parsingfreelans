@@ -45,6 +45,7 @@ async def stats() -> dict:
     filters = await worker._get_effective_filters()
     scan = await worker._get_effective_scan_settings()
     language_mode = await worker._get_effective_language_mode()
+    apply_limits = await worker._get_auto_apply_limits_snapshot()
     min_score = float(filters["min_score"])
     data = await worker.store.stats()
     data["pending_delivery"] = await worker.store.count_pending_lead_notifications(
@@ -60,6 +61,10 @@ async def stats() -> dict:
     data["scan_max_leads"] = int(scan["max_leads"])
     data["notify_burst_limit"] = int(scan["burst_limit"])
     data["notify_burst_window_minutes"] = int(scan["burst_window_minutes"])
+    data["auto_apply_hour_limit"] = int(apply_limits["hour_limit"])
+    data["auto_apply_day_limit"] = int(apply_limits["day_limit"])
+    data["auto_apply_hour_used"] = int(apply_limits["hour_used"])
+    data["auto_apply_day_used"] = int(apply_limits["day_used"])
     data["language_mode"] = str(language_mode["mode"])
     data["language_mode_label"] = str(language_mode["label"])
     data["target_languages"] = list(language_mode["languages"])

@@ -54,6 +54,10 @@ class Orchestrator:
         per_platform: list[dict[str, object]] = []
         should_apply = settings.auto_apply if auto_apply is None else auto_apply
         should_generate = auto_generate_drafts or should_apply
+        apply_hour_limit = max(0, int(settings.auto_apply_hour_limit))
+        apply_day_limit = max(0, int(settings.auto_apply_day_limit))
+        apply_attempts_last_hour = await self.store.count_apply_attempts_since(hours=1) if should_apply else 0
+        apply_attempts_last_day = await self.store.count_apply_attempts_since(hours=24) if should_apply else 0
         active_adapters = adapters if adapters is not None else self.adapters
         score_threshold = settings.min_score_to_apply if min_score_to_apply is None else max(0.0, min_score_to_apply)
         leads_limit = settings.max_leads_per_platform if max_leads_per_platform is None else max(1, max_leads_per_platform)
@@ -67,6 +71,7 @@ class Orchestrator:
             platform_found = 0
             platform_new = 0
             platform_error: str | None = None
+            passed_preview: list[dict[str, object]] = []
             try:
                 since = await self.store.get_last_seen_time(adapter.name)
                 leads = await adapter.fetch_new_leads(
@@ -104,8 +109,18 @@ class Orchestrator:
                     await self.store.record_event(
                         lead_id,
                         "lead_queued_for_delivery",
-                        {"score": scored.score},
+                        {"score": scored.score, "reasons": scored.reasons[:6]},
                     )
+                    if len(passed_preview) < 5:
+                        passed_preview.append(
+                            {
+                                "lead_id": lead_id,
+                                "title": scored.lead.title[:140],
+                                "url": scored.lead.url,
+                                "score": round(float(scored.score), 4),
+                                "reasons": [str(x)[:120] for x in scored.reasons[:4]],
+                            }
+                        )
 
                     if not should_generate:
                         continue
@@ -135,6 +150,28 @@ class Orchestrator:
                     if not should_apply:
                         continue
                     if total_applied >= settings.max_applies_per_cycle:
+                        continue
+                    if apply_hour_limit and (apply_attempts_last_hour + total_applied) >= apply_hour_limit:
+                        await self.store.record_event(
+                            lead_id,
+                            "apply_limited",
+                            {
+                                "reason": "hour_limit",
+                                "limit": apply_hour_limit,
+                                "used": apply_attempts_last_hour + total_applied,
+                            },
+                        )
+                        continue
+                    if apply_day_limit and (apply_attempts_last_day + total_applied) >= apply_day_limit:
+                        await self.store.record_event(
+                            lead_id,
+                            "apply_limited",
+                            {
+                                "reason": "day_limit",
+                                "limit": apply_day_limit,
+                                "used": apply_attempts_last_day + total_applied,
+                            },
+                        )
                         continue
 
                     result = await adapter.apply(scored.lead, draft.text)
@@ -166,6 +203,7 @@ class Orchestrator:
                         "found": platform_found,
                         "new": platform_new,
                         "error": platform_error,
+                        "passed_preview": passed_preview,
                     }
                 )
 

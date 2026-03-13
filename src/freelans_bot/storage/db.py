@@ -305,7 +305,8 @@ class SQLiteStore:
                 """
                 SELECT
                   id, platform, title, url, budget, language,
-                  score, status, published_at, raw_date, notified_at, notify_attempts, notify_last_error,
+                  score, status, proposal_url, chat_url, error_message,
+                  published_at, raw_date, notified_at, notify_attempts, notify_last_error,
                   discovered_at, updated_at
                 FROM leads
                 WHERE """
@@ -330,6 +331,9 @@ class SQLiteStore:
                     "language": row["language"],
                     "score": float(row["score"] or 0),
                     "status": row["status"],
+                    "proposal_url": row["proposal_url"],
+                    "chat_url": row["chat_url"],
+                    "error_message": row["error_message"],
                     "published_at": row["published_at"],
                     "raw_date": row["raw_date"],
                     "sent_at": row["notified_at"],
@@ -488,6 +492,23 @@ class SQLiteStore:
                 continue
             out[platform] = int(row["cnt"] or 0)
         return out
+
+    async def count_apply_attempts_since(self, *, hours: int) -> int:
+        window_hours = max(1, int(hours))
+        cutoff = (datetime.utcnow() - timedelta(hours=window_hours)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM events
+                WHERE event_type = 'apply_done'
+                  AND created_at >= ?
+                """,
+                (cutoff,),
+            )
+            row = await cur.fetchone()
+            return int(row["cnt"] if row else 0)
 
     async def update_platform_runtime(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from contextlib import suppress
@@ -215,6 +216,7 @@ class Worker:
         filters = await self._get_effective_filters()
         scan_settings = await self._get_effective_scan_settings()
         language_mode = await self._get_effective_language_mode()
+        apply_limits = await self._get_auto_apply_limits_snapshot()
         min_score_to_apply = float(filters["min_score"])
         self.orchestrator.scorer = LeadScorer(
             keywords=list(filters["keywords"]),
@@ -271,6 +273,10 @@ class Worker:
             "notify_burst_limit": int(scan_settings["burst_limit"]),
             "notify_burst_window_minutes": int(scan_settings["burst_window_minutes"]),
             "language_mode": str(language_mode["mode"]),
+            "auto_apply_hour_limit": int(apply_limits["hour_limit"]),
+            "auto_apply_day_limit": int(apply_limits["day_limit"]),
+            "auto_apply_hour_used": int(apply_limits["hour_used"]),
+            "auto_apply_day_used": int(apply_limits["day_used"]),
             "enabled_platforms": [a.name for a in adapters],
             "platforms": platform_rows,
         }
@@ -456,6 +462,10 @@ class Worker:
             await self._send_status(callback=callback)
         elif data == "menu:leads":
             await self._send_recent_leads(callback=callback)
+        elif data == "menu:flow":
+            await self._send_flow_preview(callback=callback)
+        elif data == "menu:logs":
+            await self._send_apply_logs(callback=callback)
         elif data == "menu:accounts":
             await self._send_accounts(callback=callback)
         elif data == "menu:profile":
@@ -471,6 +481,13 @@ class Worker:
         elif data == "act:cycle":
             self._run_now_event.set()
             await self._send_status(callback=callback, header="Ручной запуск цикла поставлен в очередь.")
+        elif data == "act:stop_auto":
+            self.auto_apply = False
+            await self.store.set_runtime_flag("auto_apply", False)
+            await self._send_settings(
+                callback=callback,
+                note="Автоотклик аварийно остановлен. Включи обратно вручную в настройках.",
+            )
         elif data == "toggle:pause":
             self.paused = not self.paused
             await self.store.set_runtime_flag("paused", self.paused)
@@ -570,6 +587,10 @@ class Worker:
                     InlineKeyboardButton(text="Вакансии", callback_data="menu:leads"),
                 ],
                 [
+                    InlineKeyboardButton(text="Поток", callback_data="menu:flow"),
+                    InlineKeyboardButton(text="Логи", callback_data="menu:logs"),
+                ],
+                [
                     InlineKeyboardButton(text="Аккаунты", callback_data="menu:accounts"),
                 ],
                 [
@@ -586,6 +607,7 @@ class Worker:
         filters = await self._get_effective_filters()
         scan_settings = await self._get_effective_scan_settings()
         language_mode = await self._get_effective_language_mode()
+        apply_limits = await self._get_auto_apply_limits_snapshot()
         min_score = float(filters["min_score"])
         pending_delivery = await self.store.count_pending_lead_notifications(
             min_score=min_score,
@@ -598,6 +620,8 @@ class Worker:
             "Статус:\n"
             f"Пауза: {self._yes_no(self.paused)}\n"
             f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
+            f"Лимит автоотклика: {apply_limits['hour_used']}/{apply_limits['hour_limit']} за час, "
+            f"{apply_limits['day_used']}/{apply_limits['day_limit']} за сутки\n"
             f"Активных платформ: {len(adapters)}\n"
             f"Фильтр score >= {min_score:.2f}\n"
             f"Языковой режим: {language_mode['label']}\n"
@@ -694,6 +718,161 @@ class Worker:
             InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
             callback=callback,
         )
+
+    async def _send_flow_preview(self, callback: CallbackQuery | None = None) -> None:
+        cycle_payload, cycle_created_at = await self._latest_cycle_summary_payload()
+        if not cycle_payload:
+            await self._render_menu(
+                "Пока нет данных по циклам.\nЗапусти цикл и открой экран снова.",
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="Запустить цикл", callback_data="act:cycle")],
+                        [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                    ]
+                ),
+                callback=callback,
+            )
+            return
+
+        created_text = self._format_iso_dt(cycle_created_at)
+        trigger = str(cycle_payload.get("trigger") or "-")
+        platforms = cycle_payload.get("platforms") or []
+        if not isinstance(platforms, list):
+            platforms = []
+
+        lines: list[str] = [
+            "Предпросмотр потока:",
+            f"Цикл: {created_text} | trigger={trigger}",
+            "Почему лиды прошли фильтр по площадкам:",
+        ]
+
+        for row in platforms:
+            if not isinstance(row, dict):
+                continue
+            platform = str(row.get("platform") or "").strip().lower()
+            if not platform:
+                continue
+            cfg = self.platforms_cfg.get(platform, {})
+            display = str(cfg.get("display_name", platform))
+            found = int(row.get("found") or 0)
+            new = int(row.get("new") or 0)
+            error = str(row.get("error") or "").strip()
+            preview = row.get("passed_preview") or []
+            if not isinstance(preview, list):
+                preview = []
+
+            lines.append("")
+            lines.append(f"{display}: found={found} | new={new}")
+            if error:
+                lines.append(f"Ошибка: {compact(error, 140)}")
+                continue
+
+            if not preview:
+                lines.append("Подходящих новых лидов за цикл нет.")
+                continue
+
+            for item in preview[:3]:
+                if not isinstance(item, dict):
+                    continue
+                lead_id = item.get("lead_id")
+                title = compact(str(item.get("title") or "-"), 100)
+                url = str(item.get("url") or "").strip()
+                score_val = item.get("score")
+                score_text = "-"
+                if isinstance(score_val, (int, float)):
+                    score_text = f"{float(score_val):.2f}"
+                reasons = item.get("reasons") or []
+                if isinstance(reasons, list):
+                    reasons_txt = ", ".join(str(x) for x in reasons if str(x).strip())
+                else:
+                    reasons_txt = str(reasons).strip()
+
+                lead_prefix = f"#{lead_id} " if lead_id is not None else ""
+                lines.append(f"{lead_prefix}score={score_text} | {title}")
+                if reasons_txt:
+                    lines.append(f"Почему: {compact(reasons_txt, 180)}")
+                if url:
+                    lines.append(url)
+
+        text = "\n".join(lines)
+        if len(text) > 3900:
+            text = text[:3890].rstrip() + "\n..."
+        await self._render_menu(
+            text,
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить поток", callback_data="menu:flow")],
+                    [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                ]
+            ),
+            callback=callback,
+        )
+
+    async def _send_apply_logs(self, callback: CallbackQuery | None = None) -> None:
+        logs = await self.store.recent_leads(
+            limit=8,
+            min_score=0.0,
+            exclude_skipped=False,
+        )
+        if not logs:
+            await self._render_menu(
+                "Логи пока пустые.",
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                    ]
+                ),
+                callback=callback,
+            )
+            return
+
+        lines: list[str] = ["Логи откликов и ссылок:"]
+        for item in logs:
+            lead_id = int(item.get("id") or 0)
+            platform = str(item.get("platform") or "-")
+            status = str(item.get("status") or "-")
+            sent = "Да" if item.get("sent_at") else "Нет"
+            lead_url = str(item.get("url") or "").strip() or "-"
+            proposal_url = str(item.get("proposal_url") or "").strip() or "-"
+            chat_url = str(item.get("chat_url") or "").strip() or "-"
+            err = compact(str(item.get("error_message") or item.get("notify_last_error") or ""), 140)
+
+            lines.append(f"#{lead_id} | {platform} | статус={status} | доставлено={sent}")
+            lines.append(f"Объявление: {lead_url}")
+            lines.append(f"Отклик: {proposal_url}")
+            lines.append(f"Чат: {chat_url}")
+            if err:
+                lines.append(f"Ошибка: {err}")
+            lines.append("")
+
+        text = "\n".join(lines).strip()
+        if len(text) > 3900:
+            text = text[:3890].rstrip() + "\n..."
+        await self._render_menu(
+            text,
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить логи", callback_data="menu:logs")],
+                    [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+                ]
+            ),
+            callback=callback,
+        )
+
+    async def _latest_cycle_summary_payload(self) -> tuple[dict[str, object] | None, str]:
+        events = await self.store.recent_events(limit=60)
+        for event in events:
+            if str(event.get("event_type") or "") != "cycle_summary":
+                continue
+            raw_payload = str(event.get("payload") or "")
+            if not raw_payload:
+                continue
+            with suppress(Exception):
+                parsed = json.loads(raw_payload)
+                if isinstance(parsed, dict):
+                    created_at = str(event.get("created_at") or "")
+                    return parsed, created_at
+        return None, ""
 
     async def _begin_ai_prompt(
         self,
@@ -1018,28 +1197,37 @@ class Worker:
     def _kb_settings(self) -> InlineKeyboardMarkup:
         pause_text = "Продолжить" if self.paused else "Пауза"
         auto_text = "Автоотклик: ВКЛ" if self.auto_apply else "Автоотклик: ВЫКЛ"
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=pause_text, callback_data="toggle:pause")],
-                [InlineKeyboardButton(text=auto_text, callback_data="toggle:auto")],
+        rows: list[list[InlineKeyboardButton]] = [
+            [InlineKeyboardButton(text=pause_text, callback_data="toggle:pause")],
+            [InlineKeyboardButton(text=auto_text, callback_data="toggle:auto")],
+        ]
+        if self.auto_apply:
+            rows.append([InlineKeyboardButton(text="Стоп автоотклик", callback_data="act:stop_auto")])
+        rows.extend(
+            [
                 [InlineKeyboardButton(text="Фильтр заказов", callback_data="menu:filters")],
                 [InlineKeyboardButton(text="Сканирование", callback_data="menu:scan")],
                 [InlineKeyboardButton(text="Языковой режим", callback_data="menu:languages")],
                 [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
             ]
         )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    async def _send_settings(self, callback: CallbackQuery | None = None) -> None:
+    async def _send_settings(self, callback: CallbackQuery | None = None, note: str = "") -> None:
         filters = await self._get_effective_filters()
         scan_settings = await self._get_effective_scan_settings()
         language_mode = await self._get_effective_language_mode()
+        apply_limits = await self._get_auto_apply_limits_snapshot()
         min_score = float(filters["min_score"])
         keywords = list(filters["keywords"])
         negative_keywords = list(filters["negative_keywords"])
         await self._render_menu(
+            f"{note + '\n' if note else ''}"
             "Настройки:\n"
             f"Пауза: {self._yes_no(self.paused)}\n"
             f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
+            f"Лимит автоотклика: {apply_limits['hour_used']}/{apply_limits['hour_limit']} за час, "
+            f"{apply_limits['day_used']}/{apply_limits['day_limit']} за сутки\n"
             f"Мин. score: {min_score:.2f}\n"
             f"Язык: {language_mode['label']}\n"
             f"Интервал: {int(scan_settings['interval_seconds'])} сек\n"
@@ -1344,6 +1532,18 @@ class Worker:
             "mode": mode,
             "label": self.LANGUAGE_LABELS.get(mode, mode),
             "languages": languages,
+        }
+
+    async def _get_auto_apply_limits_snapshot(self) -> dict[str, int]:
+        hour_limit = max(0, int(settings.auto_apply_hour_limit))
+        day_limit = max(0, int(settings.auto_apply_day_limit))
+        hour_used = await self.store.count_apply_attempts_since(hours=1)
+        day_used = await self.store.count_apply_attempts_since(hours=24)
+        return {
+            "hour_limit": hour_limit,
+            "day_limit": day_limit,
+            "hour_used": hour_used,
+            "day_used": day_used,
         }
 
     def _keywords_from_text(self, raw: str | None) -> list[str]:
