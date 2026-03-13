@@ -62,8 +62,9 @@ class Orchestrator:
         apply_day_limit = max(0, int(settings.auto_apply_day_limit))
         apply_attempts_last_hour = await self.store.count_apply_attempts_since(hours=1) if should_apply else 0
         apply_attempts_last_day = await self.store.count_apply_attempts_since(hours=24) if should_apply else 0
+        similarity_window = max(5, int(self.proposal_validator.similarity_window))
         recent_proposals_cache = (
-            await self.store.recent_proposal_texts(limit=settings.proposal_similarity_window)
+            await self.store.recent_proposal_texts(limit=similarity_window)
             if should_apply
             else []
         )
@@ -190,8 +191,8 @@ class Orchestrator:
                         recent_proposals=recent_proposals_cache,
                     )
                     recent_proposals_cache.insert(0, draft.text)
-                    if len(recent_proposals_cache) > settings.proposal_similarity_window:
-                        recent_proposals_cache = recent_proposals_cache[: settings.proposal_similarity_window]
+                    if len(recent_proposals_cache) > similarity_window:
+                        recent_proposals_cache = recent_proposals_cache[:similarity_window]
                     if not validation.ok:
                         platform_validation_failed += 1
                         total_validation_failed += 1

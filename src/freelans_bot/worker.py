@@ -5,7 +5,7 @@ import json
 import re
 import time
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -80,6 +80,31 @@ class Worker:
         "mixed": "RU + EN",
     }
 
+    VALIDATOR_RUNTIME_KEYS = {
+        "enabled": "validator:enabled",
+        "min_chars": "validator:min_chars",
+        "max_chars": "validator:max_chars",
+        "similarity_threshold": "validator:similarity_threshold",
+        "similarity_window": "validator:similarity_window",
+    }
+
+    VALIDATOR_INPUT_HINTS = {
+        "min_chars": "Отправь минимальную длину отклика (120..1200).\nДля сброса: default",
+        "max_chars": "Отправь максимальную длину отклика (400..4000).\nДля сброса: default",
+        "similarity_threshold": "Отправь порог похожести (0.5..0.99).\nДля сброса: default",
+        "similarity_window": "Отправь окно сравнения (5..200).\nДля сброса: default",
+    }
+
+    VALIDATOR_LABELS = {
+        "enabled": "Валидатор включен",
+        "min_chars": "Мин. длина",
+        "max_chars": "Макс. длина",
+        "similarity_threshold": "Порог похожести",
+        "similarity_window": "Окно похожести",
+    }
+
+    AUTO_APPLY_SUSPEND_UNTIL_KEY = "auto_apply:suspend_until"
+
     GLOBAL_PROFILE_HINTS = {
         "name": "Отправь имя для профиля.",
         "resume": "Отправь текст общего резюме.",
@@ -153,6 +178,7 @@ class Worker:
         await self.store.init()
         self.paused = await self.store.get_runtime_flag("paused", default=False)
         self.auto_apply = await self.store.get_runtime_flag("auto_apply", default=settings.auto_apply)
+        await self._sync_auto_apply_suspend(notify=False)
 
         if settings.telegram_control_enabled:
             with suppress(Exception):
@@ -177,6 +203,7 @@ class Worker:
         while not self._stop_event.is_set():
             started_at = time.monotonic()
             try:
+                await self._sync_auto_apply_suspend(notify=True)
                 if self._run_now_event.is_set():
                     self._run_now_event.clear()
                     await self._run_cycle(trigger="manual")
@@ -219,6 +246,7 @@ class Worker:
         scan_settings = await self._get_effective_scan_settings()
         language_mode = await self._get_effective_language_mode()
         apply_limits = await self._get_auto_apply_limits_snapshot()
+        validator_settings = await self._get_effective_validation_settings()
         min_score_to_apply = float(filters["min_score"])
         self.orchestrator.scorer = LeadScorer(
             keywords=list(filters["keywords"]),
@@ -226,6 +254,14 @@ class Worker:
             focus_keywords=settings.focus_keyword_list,
             strict_topic_filter=settings.strict_topic_filter,
             target_languages=set(language_mode["languages"]),
+        )
+        self.orchestrator.proposal_validator = ProposalValidator(
+            enabled=bool(validator_settings["enabled"]),
+            min_chars=int(validator_settings["min_chars"]),
+            max_chars=int(validator_settings["max_chars"]),
+            similarity_threshold=float(validator_settings["similarity_threshold"]),
+            similarity_window=int(validator_settings["similarity_window"]),
+            banned_phrases=settings.proposal_banned_list,
         )
         runtime_before = await self.store.get_platform_runtime()
 
@@ -280,6 +316,11 @@ class Worker:
             "auto_apply_day_limit": int(apply_limits["day_limit"]),
             "auto_apply_hour_used": int(apply_limits["hour_used"]),
             "auto_apply_day_used": int(apply_limits["day_used"]),
+            "validator_enabled": bool(validator_settings["enabled"]),
+            "validator_min_chars": int(validator_settings["min_chars"]),
+            "validator_max_chars": int(validator_settings["max_chars"]),
+            "validator_similarity_threshold": float(validator_settings["similarity_threshold"]),
+            "validator_similarity_window": int(validator_settings["similarity_window"]),
             "enabled_platforms": [a.name for a in adapters],
             "platforms": platform_rows,
         }
@@ -482,16 +523,21 @@ class Worker:
             await self._send_scan_menu(callback=callback)
         elif data == "menu:languages":
             await self._send_language_menu(callback=callback)
+        elif data == "menu:validator":
+            await self._send_validator_menu(callback=callback)
         elif data == "act:cycle":
             self._run_now_event.set()
             await self._send_status(callback=callback, header="Ручной запуск цикла поставлен в очередь.")
         elif data == "act:stop_auto":
             self.auto_apply = False
             await self.store.set_runtime_flag("auto_apply", False)
+            await self.store.set_runtime_value(self.AUTO_APPLY_SUSPEND_UNTIL_KEY, "")
             await self._send_settings(
                 callback=callback,
                 note="Автоотклик аварийно остановлен. Включи обратно вручную в настройках.",
             )
+        elif data == "act:auto_off_tomorrow":
+            await self._disable_auto_apply_until_tomorrow(callback=callback)
         elif data == "toggle:pause":
             self.paused = not self.paused
             await self.store.set_runtime_flag("paused", self.paused)
@@ -499,6 +545,8 @@ class Worker:
         elif data == "toggle:auto":
             self.auto_apply = not self.auto_apply
             await self.store.set_runtime_flag("auto_apply", self.auto_apply)
+            if self.auto_apply:
+                await self.store.set_runtime_value(self.AUTO_APPLY_SUSPEND_UNTIL_KEY, "")
             await self._send_settings(callback=callback)
         elif data.startswith("pt:"):
             platform = data.split(":", 1)[1]
@@ -524,6 +572,11 @@ class Worker:
         elif data.startswith("setlang:"):
             mode = data.split(":", 1)[1].strip().lower()
             await self._set_language_mode(mode, callback=callback)
+        elif data == "toggle:validator":
+            await self._toggle_validator_enabled(callback=callback)
+        elif data.startswith("edv:"):
+            field = data.split(":", 1)[1]
+            await self._begin_validator_input(str(chat_id), field, callback=callback)
         elif data.startswith("apf:"):
             parts = data.split(":", 2)
             if len(parts) != 3:
@@ -612,6 +665,9 @@ class Worker:
         scan_settings = await self._get_effective_scan_settings()
         language_mode = await self._get_effective_language_mode()
         apply_limits = await self._get_auto_apply_limits_snapshot()
+        validator_settings = await self._get_effective_validation_settings()
+        suspend_until = await self._get_auto_apply_suspend_until()
+        suspend_text = self._format_suspend_until(suspend_until)
         min_score = float(filters["min_score"])
         pending_delivery = await self.store.count_pending_lead_notifications(
             min_score=min_score,
@@ -624,6 +680,7 @@ class Worker:
             "Статус:\n"
             f"Пауза: {self._yes_no(self.paused)}\n"
             f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
+            f"Пауза автоотклика до: {suspend_text}\n"
             f"Лимит автоотклика: {apply_limits['hour_used']}/{apply_limits['hour_limit']} за час, "
             f"{apply_limits['day_used']}/{apply_limits['day_limit']} за сутки\n"
             f"Активных платформ: {len(adapters)}\n"
@@ -633,6 +690,9 @@ class Worker:
             f"Глубина: {int(scan_settings['max_pages'])} стр\n"
             f"Лимит: {int(scan_settings['max_leads'])} лид/биржа\n"
             f"Anti-flood: {int(scan_settings['burst_limit'])}/{int(scan_settings['burst_window_minutes'])}м на биржу\n"
+            f"Валидатор: {self._yes_no(bool(validator_settings['enabled']))} | "
+            f"{int(validator_settings['min_chars'])}-{int(validator_settings['max_chars'])} симв | "
+            f"sim<={float(validator_settings['similarity_threshold']):.2f}\n"
             f"К отправке в Telegram: {pending_delivery}\n"
             f"Новые: {stats.get('new', 0)}\n"
             f"Черновики: {stats.get('drafted', 0)}\n"
@@ -1164,6 +1224,11 @@ class Worker:
             await self._save_scan_input(chat_key=chat_key, field=field, value=value)
             return
 
+        if len(parts) == 2 and parts[0] == "v":
+            field = parts[1]
+            await self._save_validator_input(chat_key=chat_key, field=field, value=value)
+            return
+
         if len(parts) == 2 and parts[0] == "g":
             field = parts[1]
             if field == "portfolio_urls":
@@ -1208,11 +1273,20 @@ class Worker:
         ]
         if self.auto_apply:
             rows.append([InlineKeyboardButton(text="Стоп автоотклик", callback_data="act:stop_auto")])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Отключить до завтра 09:00 МСК",
+                        callback_data="act:auto_off_tomorrow",
+                    )
+                ]
+            )
         rows.extend(
             [
                 [InlineKeyboardButton(text="Фильтр заказов", callback_data="menu:filters")],
                 [InlineKeyboardButton(text="Сканирование", callback_data="menu:scan")],
                 [InlineKeyboardButton(text="Языковой режим", callback_data="menu:languages")],
+                [InlineKeyboardButton(text="Валидатор отклика", callback_data="menu:validator")],
                 [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
             ]
         )
@@ -1223,6 +1297,9 @@ class Worker:
         scan_settings = await self._get_effective_scan_settings()
         language_mode = await self._get_effective_language_mode()
         apply_limits = await self._get_auto_apply_limits_snapshot()
+        validator_settings = await self._get_effective_validation_settings()
+        suspend_until = await self._get_auto_apply_suspend_until()
+        suspend_text = self._format_suspend_until(suspend_until)
         min_score = float(filters["min_score"])
         keywords = list(filters["keywords"])
         negative_keywords = list(filters["negative_keywords"])
@@ -1231,6 +1308,7 @@ class Worker:
             "Настройки:\n"
             f"Пауза: {self._yes_no(self.paused)}\n"
             f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
+            f"Пауза автоотклика до: {suspend_text}\n"
             f"Лимит автоотклика: {apply_limits['hour_used']}/{apply_limits['hour_limit']} за час, "
             f"{apply_limits['day_used']}/{apply_limits['day_limit']} за сутки\n"
             f"Мин. score: {min_score:.2f}\n"
@@ -1239,6 +1317,9 @@ class Worker:
             f"Глубина: {int(scan_settings['max_pages'])} стр\n"
             f"Лимит: {int(scan_settings['max_leads'])} лид/биржа\n"
             f"Anti-flood: {int(scan_settings['burst_limit'])}/{int(scan_settings['burst_window_minutes'])}м на биржу\n"
+            f"Валидатор: {self._yes_no(bool(validator_settings['enabled']))} | "
+            f"{int(validator_settings['min_chars'])}-{int(validator_settings['max_chars'])} симв | "
+            f"sim<={float(validator_settings['similarity_threshold']):.2f}\n"
             f"Ключевые: {len(keywords)}\n"
             f"Минус-слова: {len(negative_keywords)}\n\n"
             "Если автоотклик выключен, бот только парсит и дает кнопку генерации.",
@@ -1377,6 +1458,92 @@ class Worker:
             return f"● {label}"
         return label
 
+    async def _send_validator_menu(self, callback: CallbackQuery | None = None, note: str = "") -> None:
+        validator = await self._get_effective_validation_settings()
+        enabled = bool(validator["enabled"])
+        status = "ВКЛ" if enabled else "ВЫКЛ"
+        text = (
+            f"{note + '\n' if note else ''}"
+            "Валидатор отклика (перед auto-apply):\n"
+            f"Статус: {status}\n"
+            f"Мин. длина: {int(validator['min_chars'])}\n"
+            f"Макс. длина: {int(validator['max_chars'])}\n"
+            f"Порог похожести: {float(validator['similarity_threshold']):.2f}\n"
+            f"Окно похожести: {int(validator['similarity_window'])}\n\n"
+            "Настрой параметры через кнопки ниже."
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Вкл/выкл валидатор", callback_data="toggle:validator")],
+                [InlineKeyboardButton(text="Мин. длина", callback_data="edv:min_chars")],
+                [InlineKeyboardButton(text="Макс. длина", callback_data="edv:max_chars")],
+                [InlineKeyboardButton(text="Порог похожести", callback_data="edv:similarity_threshold")],
+                [InlineKeyboardButton(text="Окно похожести", callback_data="edv:similarity_window")],
+                [InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")],
+            ]
+        )
+        await self._render_menu(text, kb, callback=callback)
+
+    async def _toggle_validator_enabled(self, callback: CallbackQuery | None = None) -> None:
+        current = await self._get_effective_validation_settings()
+        enabled = bool(current["enabled"])
+        await self.store.set_runtime_flag(self.VALIDATOR_RUNTIME_KEYS["enabled"], not enabled)
+        note = "Валидатор включен." if not enabled else "Валидатор выключен."
+        await self._send_validator_menu(callback=callback, note=note)
+
+    async def _begin_validator_input(
+        self,
+        chat_key: str,
+        field: str,
+        callback: CallbackQuery | None = None,
+    ) -> None:
+        if field not in self.VALIDATOR_INPUT_HINTS:
+            await self._send_validator_menu(callback=callback)
+            return
+        self._pending_profile_input[chat_key] = f"v:{field}"
+        label = self.VALIDATOR_LABELS.get(field, field)
+        hint = self.VALIDATOR_INPUT_HINTS[field]
+        await self._render_menu(
+            f"Режим ввода: {label}\n{hint}\n\n"
+            "Отправь одно текстовое сообщение.",
+            InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu:validator")]]
+            ),
+            callback=callback,
+        )
+
+    async def _disable_auto_apply_until_tomorrow(
+        self,
+        callback: CallbackQuery | None = None,
+    ) -> None:
+        now_local = datetime.now(self._display_tz)
+        target_day = now_local.date() + timedelta(days=1)
+        target_local = datetime(
+            year=target_day.year,
+            month=target_day.month,
+            day=target_day.day,
+            hour=9,
+            minute=0,
+            second=0,
+            tzinfo=self._display_tz,
+        )
+        target_utc = target_local.astimezone(timezone.utc)
+        self.auto_apply = False
+        await self.store.set_runtime_flag("auto_apply", False)
+        await self.store.set_runtime_value(self.AUTO_APPLY_SUSPEND_UNTIL_KEY, target_utc.isoformat())
+        await self.store.record_event(
+            None,
+            "auto_apply_suspended",
+            {
+                "until_utc": target_utc.isoformat(),
+                "until_local": target_local.strftime("%d.%m.%Y %H:%M МСК"),
+            },
+        )
+        await self._send_settings(
+            callback=callback,
+            note=f"Автоотклик отключен до {target_local.strftime('%d.%m.%Y %H:%M МСК')}.",
+        )
+
     def _portfolio_urls(self, raw: str) -> list[str]:
         return [x.strip() for x in re.split(r"[,\n]", raw) if x.strip()]
 
@@ -1466,6 +1633,64 @@ class Worker:
         label = self.SCAN_LABELS.get(normalized_field, normalized_field)
         await self._send_scan_menu(note=f"Сохранено: {label} = {clamped}")
 
+    async def _save_validator_input(self, *, chat_key: str, field: str, value: str) -> None:
+        normalized = field.strip().lower()
+        if normalized not in self.VALIDATOR_INPUT_HINTS:
+            self._pending_profile_input.pop(chat_key, None)
+            await self.notifier.send_text("Неизвестная настройка валидатора", reply_markup=self._kb_main())
+            return
+
+        lowered = value.strip().lower()
+        reset_requested = lowered in {"default", "по умолчанию", "сброс", "reset", "clear"}
+        runtime_key = self.VALIDATOR_RUNTIME_KEYS.get(normalized)
+        if not runtime_key:
+            self._pending_profile_input.pop(chat_key, None)
+            await self.notifier.send_text("Неизвестная настройка валидатора", reply_markup=self._kb_main())
+            return
+
+        if reset_requested:
+            await self.store.set_runtime_value(runtime_key, "")
+            self._pending_profile_input.pop(chat_key, None)
+            label = self.VALIDATOR_LABELS.get(normalized, normalized)
+            await self._send_validator_menu(note=f"Сброшено: {label}")
+            return
+
+        current = await self._get_effective_validation_settings()
+        if normalized in {"min_chars", "max_chars", "similarity_window"}:
+            try:
+                parsed_int = int(value.strip())
+            except ValueError:
+                await self.notifier.send_text("Нужно целое число.")
+                return
+            if normalized == "min_chars":
+                clamped_int = max(120, min(1200, parsed_int))
+                if clamped_int > int(current["max_chars"]):
+                    await self.notifier.send_text("Мин. длина не может быть больше макс. длины.")
+                    return
+            elif normalized == "max_chars":
+                clamped_int = max(400, min(4000, parsed_int))
+                if clamped_int < int(current["min_chars"]):
+                    await self.notifier.send_text("Макс. длина не может быть меньше мин. длины.")
+                    return
+            else:
+                clamped_int = max(5, min(200, parsed_int))
+            await self.store.set_runtime_value(runtime_key, str(clamped_int))
+            self._pending_profile_input.pop(chat_key, None)
+            label = self.VALIDATOR_LABELS.get(normalized, normalized)
+            await self._send_validator_menu(note=f"Сохранено: {label} = {clamped_int}")
+            return
+
+        try:
+            parsed_float = float(value.replace(",", "."))
+        except ValueError:
+            await self.notifier.send_text("Нужно число от 0.5 до 0.99")
+            return
+        clamped_float = max(0.5, min(0.99, parsed_float))
+        await self.store.set_runtime_value(runtime_key, f"{clamped_float:.3f}".rstrip("0").rstrip("."))
+        self._pending_profile_input.pop(chat_key, None)
+        label = self.VALIDATOR_LABELS.get(normalized, normalized)
+        await self._send_validator_menu(note=f"Сохранено: {label} = {clamped_float:.2f}")
+
     async def _get_effective_filters(self) -> dict[str, object]:
         min_score = settings.min_score_to_apply
         raw_min = await self.store.get_runtime_value(self.FILTER_RUNTIME_KEYS["min_score"])
@@ -1550,6 +1775,96 @@ class Worker:
             "hour_used": hour_used,
             "day_used": day_used,
         }
+
+    async def _get_effective_validation_settings(self) -> dict[str, object]:
+        enabled = bool(settings.proposal_validation_enabled)
+        min_chars = int(settings.proposal_min_chars)
+        max_chars = int(settings.proposal_max_chars)
+        similarity_threshold = float(settings.proposal_similarity_threshold)
+        similarity_window = int(settings.proposal_similarity_window)
+
+        raw_enabled = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["enabled"])
+        if raw_enabled:
+            enabled = raw_enabled in {"1", "true", "yes", "on"}
+
+        raw_min = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["min_chars"])
+        if raw_min:
+            with suppress(ValueError):
+                min_chars = int(raw_min)
+
+        raw_max = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["max_chars"])
+        if raw_max:
+            with suppress(ValueError):
+                max_chars = int(raw_max)
+
+        raw_threshold = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["similarity_threshold"])
+        if raw_threshold:
+            with suppress(ValueError):
+                similarity_threshold = float(raw_threshold.replace(",", "."))
+
+        raw_window = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["similarity_window"])
+        if raw_window:
+            with suppress(ValueError):
+                similarity_window = int(raw_window)
+
+        min_chars = max(120, min(1200, min_chars))
+        max_chars = max(400, min(4000, max_chars))
+        if max_chars < min_chars:
+            max_chars = min_chars
+        similarity_threshold = max(0.5, min(0.99, similarity_threshold))
+        similarity_window = max(5, min(200, similarity_window))
+
+        return {
+            "enabled": enabled,
+            "min_chars": min_chars,
+            "max_chars": max_chars,
+            "similarity_threshold": similarity_threshold,
+            "similarity_window": similarity_window,
+        }
+
+    async def _get_auto_apply_suspend_until(self) -> datetime | None:
+        raw = await self.store.get_runtime_value(self.AUTO_APPLY_SUSPEND_UNTIL_KEY)
+        if not raw:
+            return None
+        with suppress(ValueError):
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        return None
+
+    async def _sync_auto_apply_suspend(self, *, notify: bool) -> None:
+        suspend_until = await self._get_auto_apply_suspend_until()
+        if suspend_until is None:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        if now_utc < suspend_until:
+            if self.auto_apply:
+                self.auto_apply = False
+                await self.store.set_runtime_flag("auto_apply", False)
+            return
+
+        await self.store.set_runtime_value(self.AUTO_APPLY_SUSPEND_UNTIL_KEY, "")
+        if not self.auto_apply:
+            self.auto_apply = True
+            await self.store.set_runtime_flag("auto_apply", True)
+            await self.store.record_event(
+                None,
+                "auto_apply_resumed",
+                {"resume_at": suspend_until.isoformat(), "reason": "suspend_expired"},
+            )
+            if notify:
+                local_text = suspend_until.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M МСК")
+                await self.notifier.send_text(
+                    f"Автоотклик снова включен.\nПлановая пауза завершилась ({local_text}).",
+                    reply_markup=self._kb_main(),
+                )
+
+    def _format_suspend_until(self, value: datetime | None) -> str:
+        if value is None:
+            return "-"
+        return value.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M МСК")
 
     def _keywords_from_text(self, raw: str | None) -> list[str]:
         if raw is None:

@@ -17,13 +17,33 @@ class ProposalValidationResult:
 
 
 class ProposalValidator:
-    def __init__(self) -> None:
-        self.enabled = bool(settings.proposal_validation_enabled)
-        self.min_chars = max(80, int(settings.proposal_min_chars))
-        self.max_chars = max(self.min_chars, int(settings.proposal_max_chars))
-        self.similarity_threshold = max(0.5, min(0.99, float(settings.proposal_similarity_threshold)))
-        self.similarity_window = max(5, min(200, int(settings.proposal_similarity_window)))
-        self.banned_phrases = settings.proposal_banned_list
+    def __init__(
+        self,
+        *,
+        enabled: bool | None = None,
+        min_chars: int | None = None,
+        max_chars: int | None = None,
+        similarity_threshold: float | None = None,
+        similarity_window: int | None = None,
+        banned_phrases: list[str] | None = None,
+    ) -> None:
+        effective_enabled = settings.proposal_validation_enabled if enabled is None else enabled
+        effective_min = settings.proposal_min_chars if min_chars is None else min_chars
+        effective_max = settings.proposal_max_chars if max_chars is None else max_chars
+        effective_threshold = (
+            settings.proposal_similarity_threshold
+            if similarity_threshold is None
+            else similarity_threshold
+        )
+        effective_window = settings.proposal_similarity_window if similarity_window is None else similarity_window
+        effective_banned = settings.proposal_banned_list if banned_phrases is None else banned_phrases
+
+        self.enabled = bool(effective_enabled)
+        self.min_chars = max(80, int(effective_min))
+        self.max_chars = max(self.min_chars, int(effective_max))
+        self.similarity_threshold = max(0.5, min(0.99, float(effective_threshold)))
+        self.similarity_window = max(5, min(200, int(effective_window)))
+        self.banned_phrases = [str(x).strip().lower() for x in effective_banned if str(x).strip()]
 
     def validate(
         self,
