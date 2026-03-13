@@ -105,6 +105,9 @@ python3 -m venv .venv
 Скипнутые заявки в `Вакансии` не показываются.
 Экран `Поток` показывает причины прохождения фильтра по последнему циклу.
 Экран `Логи` показывает ссылки на объявление/отклик/чат и текущий статус отправки.
+В разделе `Валидатор отклика` есть экран `Причины блокировок (24ч)` с топом ошибок.
+При всплеске блокировок валидатора бот отправляет отдельный alert в Telegram.
+Параметры spike-alert (вкл/выкл, порог, окно) тоже настраиваются из Telegram.
 
 Внутри `Accounts` можно заполнить анкету для каждой площадки:
 
@@ -165,6 +168,7 @@ curl "http://127.0.0.1:8000/learning/examples?language=ru&limit=5"
 - `PROPOSAL_SIMILARITY_THRESHOLD` / `PROPOSAL_SIMILARITY_WINDOW` — анти-шаблон перед apply.
 - `PROPOSAL_BANNED_PHRASES` — стоп-фразы, блокирующие автоотправку.
 - Runtime-настройка валидатора из Telegram имеет приоритет над env-порогами.
+- `VALIDATOR_SPIKE_ALERT_ENABLED`, `VALIDATOR_SPIKE_THRESHOLD`, `VALIDATOR_SPIKE_WINDOW_MINUTES` — алерт по всплеску блокировок.
 - `POLL_INTERVAL_SECONDS=5` — интервал между площадками (round-robin).
 - Runtime-настройка из Telegram имеет приоритет над `POLL_INTERVAL_SECONDS`.
 - `TELEGRAM_NOTIFY_BATCH_SIZE=8` — сколько лидов отправлять в Telegram за один проход.

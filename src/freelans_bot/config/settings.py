@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     proposal_similarity_threshold: float = 0.93
     proposal_similarity_window: int = 30
     proposal_banned_phrases: str = "guaranteed #1,100% guaranteed,предоплата на карту,только сегодня скидка"
+    validator_spike_alert_enabled: bool = True
+    validator_spike_threshold: int = 10
+    validator_spike_window_minutes: int = 15
 
     target_languages: str = "ru"
     keywords: str = "telegram bot,python,ai automation"

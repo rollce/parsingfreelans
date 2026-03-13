@@ -286,6 +286,96 @@ class SQLiteStore:
             })
         return result
 
+    async def recent_events_by_type(
+        self,
+        *,
+        event_type: str,
+        hours: int = 24,
+        limit: int = 500,
+    ) -> list[dict]:
+        cutoff = (datetime.utcnow() - timedelta(hours=max(1, hours))).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT id, lead_id, event_type, payload, created_at
+                FROM events
+                WHERE event_type = ?
+                  AND created_at >= ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (event_type, cutoff, max(1, limit)),
+            )
+            rows = await cur.fetchall()
+        result: list[dict] = []
+        for row in rows:
+            result.append(
+                {
+                    "id": row["id"],
+                    "lead_id": row["lead_id"],
+                    "event_type": row["event_type"],
+                    "payload": row["payload"],
+                    "created_at": row["created_at"],
+                }
+            )
+        return result
+
+    async def validation_failures_with_leads(self, *, hours: int = 24, limit: int = 500) -> list[dict]:
+        cutoff = (datetime.utcnow() - timedelta(hours=max(1, hours))).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  e.id AS event_id,
+                  e.lead_id AS lead_id,
+                  e.payload AS payload,
+                  e.created_at AS created_at,
+                  l.platform AS platform,
+                  l.title AS lead_title,
+                  l.url AS lead_url
+                FROM events e
+                LEFT JOIN leads l ON l.id = e.lead_id
+                WHERE e.event_type = 'apply_validation_failed'
+                  AND e.created_at >= ?
+                ORDER BY e.id DESC
+                LIMIT ?
+                """,
+                (cutoff, max(1, limit)),
+            )
+            rows = await cur.fetchall()
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "event_id": int(row["event_id"] or 0),
+                    "lead_id": row["lead_id"],
+                    "payload": row["payload"],
+                    "created_at": row["created_at"],
+                    "platform": row["platform"],
+                    "lead_title": row["lead_title"],
+                    "lead_url": row["lead_url"],
+                }
+            )
+        return out
+
+    async def count_recent_events(self, *, event_type: str, minutes: int = 15) -> int:
+        cutoff = (datetime.utcnow() - timedelta(minutes=max(1, minutes))).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM events
+                WHERE event_type = ?
+                  AND created_at >= ?
+                """,
+                (event_type, cutoff),
+            )
+            row = await cur.fetchone()
+            return int(row["cnt"] if row else 0)
+
     async def recent_leads(
         self,
         *,

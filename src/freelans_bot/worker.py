@@ -86,6 +86,9 @@ class Worker:
         "max_chars": "validator:max_chars",
         "similarity_threshold": "validator:similarity_threshold",
         "similarity_window": "validator:similarity_window",
+        "spike_alert_enabled": "validator:spike_alert_enabled",
+        "spike_threshold": "validator:spike_threshold",
+        "spike_window_minutes": "validator:spike_window_minutes",
     }
 
     VALIDATOR_INPUT_HINTS = {
@@ -93,6 +96,8 @@ class Worker:
         "max_chars": "Отправь максимальную длину отклика (400..4000).\nДля сброса: default",
         "similarity_threshold": "Отправь порог похожести (0.5..0.99).\nДля сброса: default",
         "similarity_window": "Отправь окно сравнения (5..200).\nДля сброса: default",
+        "spike_threshold": "Отправь порог spike-alert (1..200 блокировок).\nДля сброса: default",
+        "spike_window_minutes": "Отправь окно spike-alert в минутах (1..180).\nДля сброса: default",
     }
 
     VALIDATOR_LABELS = {
@@ -101,9 +106,13 @@ class Worker:
         "max_chars": "Макс. длина",
         "similarity_threshold": "Порог похожести",
         "similarity_window": "Окно похожести",
+        "spike_alert_enabled": "Spike-alert включен",
+        "spike_threshold": "Порог spike-alert",
+        "spike_window_minutes": "Окно spike-alert",
     }
 
     AUTO_APPLY_SUSPEND_UNTIL_KEY = "auto_apply:suspend_until"
+    VALIDATOR_SPIKE_ALERT_ACTIVE_KEY = "alert:validator_spike_active"
 
     GLOBAL_PROFILE_HINTS = {
         "name": "Отправь имя для профиля.",
@@ -247,6 +256,7 @@ class Worker:
         language_mode = await self._get_effective_language_mode()
         apply_limits = await self._get_auto_apply_limits_snapshot()
         validator_settings = await self._get_effective_validation_settings()
+        validator_spike = await self._get_validator_spike_snapshot()
         min_score_to_apply = float(filters["min_score"])
         self.orchestrator.scorer = LeadScorer(
             keywords=list(filters["keywords"]),
@@ -321,10 +331,15 @@ class Worker:
             "validator_max_chars": int(validator_settings["max_chars"]),
             "validator_similarity_threshold": float(validator_settings["similarity_threshold"]),
             "validator_similarity_window": int(validator_settings["similarity_window"]),
+            "validator_spike_enabled": bool(validator_spike["enabled"]),
+            "validator_spike_threshold": int(validator_spike["threshold"]),
+            "validator_spike_window_minutes": int(validator_spike["window_minutes"]),
+            "validator_spike_count": int(validator_spike["count"]),
             "enabled_platforms": [a.name for a in adapters],
             "platforms": platform_rows,
         }
         await self.store.record_event(None, "cycle_summary", payload)
+        await self._maybe_notify_validator_spike()
         if trigger == "manual":
             await self.notifier.send_text(
                 "Цикл завершен:\n"
@@ -525,6 +540,8 @@ class Worker:
             await self._send_language_menu(callback=callback)
         elif data == "menu:validator":
             await self._send_validator_menu(callback=callback)
+        elif data == "menu:validator_reasons":
+            await self._send_validator_reasons(callback=callback)
         elif data == "act:cycle":
             self._run_now_event.set()
             await self._send_status(callback=callback, header="Ручной запуск цикла поставлен в очередь.")
@@ -574,6 +591,8 @@ class Worker:
             await self._set_language_mode(mode, callback=callback)
         elif data == "toggle:validator":
             await self._toggle_validator_enabled(callback=callback)
+        elif data == "toggle:validator_spike":
+            await self._toggle_validator_spike_alert(callback=callback)
         elif data.startswith("edv:"):
             field = data.split(":", 1)[1]
             await self._begin_validator_input(str(chat_id), field, callback=callback)
@@ -666,6 +685,7 @@ class Worker:
         language_mode = await self._get_effective_language_mode()
         apply_limits = await self._get_auto_apply_limits_snapshot()
         validator_settings = await self._get_effective_validation_settings()
+        validator_spike = await self._get_validator_spike_snapshot()
         suspend_until = await self._get_auto_apply_suspend_until()
         suspend_text = self._format_suspend_until(suspend_until)
         min_score = float(filters["min_score"])
@@ -693,6 +713,8 @@ class Worker:
             f"Валидатор: {self._yes_no(bool(validator_settings['enabled']))} | "
             f"{int(validator_settings['min_chars'])}-{int(validator_settings['max_chars'])} симв | "
             f"sim<={float(validator_settings['similarity_threshold']):.2f}\n"
+            f"Spike alert: {self._yes_no(bool(validator_spike['enabled']))} | "
+            f"{int(validator_spike['count'])}/{int(validator_spike['threshold'])} за {int(validator_spike['window_minutes'])}м\n"
             f"К отправке в Telegram: {pending_delivery}\n"
             f"Новые: {stats.get('new', 0)}\n"
             f"Черновики: {stats.get('drafted', 0)}\n"
@@ -1298,6 +1320,7 @@ class Worker:
         language_mode = await self._get_effective_language_mode()
         apply_limits = await self._get_auto_apply_limits_snapshot()
         validator_settings = await self._get_effective_validation_settings()
+        validator_spike = await self._get_validator_spike_snapshot()
         suspend_until = await self._get_auto_apply_suspend_until()
         suspend_text = self._format_suspend_until(suspend_until)
         min_score = float(filters["min_score"])
@@ -1320,6 +1343,8 @@ class Worker:
             f"Валидатор: {self._yes_no(bool(validator_settings['enabled']))} | "
             f"{int(validator_settings['min_chars'])}-{int(validator_settings['max_chars'])} симв | "
             f"sim<={float(validator_settings['similarity_threshold']):.2f}\n"
+            f"Spike alert: {self._yes_no(bool(validator_spike['enabled']))} | "
+            f"{int(validator_spike['count'])}/{int(validator_spike['threshold'])} за {int(validator_spike['window_minutes'])}м\n"
             f"Ключевые: {len(keywords)}\n"
             f"Минус-слова: {len(negative_keywords)}\n\n"
             "Если автоотклик выключен, бот только парсит и дает кнопку генерации.",
@@ -1460,6 +1485,7 @@ class Worker:
 
     async def _send_validator_menu(self, callback: CallbackQuery | None = None, note: str = "") -> None:
         validator = await self._get_effective_validation_settings()
+        spike = await self._get_validator_spike_snapshot()
         enabled = bool(validator["enabled"])
         status = "ВКЛ" if enabled else "ВЫКЛ"
         text = (
@@ -1469,26 +1495,127 @@ class Worker:
             f"Мин. длина: {int(validator['min_chars'])}\n"
             f"Макс. длина: {int(validator['max_chars'])}\n"
             f"Порог похожести: {float(validator['similarity_threshold']):.2f}\n"
-            f"Окно похожести: {int(validator['similarity_window'])}\n\n"
+            f"Окно похожести: {int(validator['similarity_window'])}\n"
+            f"Spike-alert: {self._yes_no(bool(spike['enabled']))}\n"
+            f"Порог spike-alert: {int(spike['threshold'])}\n"
+            f"Окно spike-alert: {int(spike['window_minutes'])} мин\n\n"
             "Настрой параметры через кнопки ниже."
         )
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Вкл/выкл валидатор", callback_data="toggle:validator")],
+                [InlineKeyboardButton(text="Вкл/выкл spike-alert", callback_data="toggle:validator_spike")],
                 [InlineKeyboardButton(text="Мин. длина", callback_data="edv:min_chars")],
                 [InlineKeyboardButton(text="Макс. длина", callback_data="edv:max_chars")],
                 [InlineKeyboardButton(text="Порог похожести", callback_data="edv:similarity_threshold")],
                 [InlineKeyboardButton(text="Окно похожести", callback_data="edv:similarity_window")],
+                [InlineKeyboardButton(text="Порог spike-alert", callback_data="edv:spike_threshold")],
+                [InlineKeyboardButton(text="Окно spike-alert", callback_data="edv:spike_window_minutes")],
+                [InlineKeyboardButton(text="Причины блокировок (24ч)", callback_data="menu:validator_reasons")],
                 [InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")],
             ]
         )
         await self._render_menu(text, kb, callback=callback)
+
+    async def _send_validator_reasons(self, callback: CallbackQuery | None = None) -> None:
+        rows = await self.store.validation_failures_with_leads(hours=24, limit=500)
+        if not rows:
+            await self._render_menu(
+                "Причины блокировок валидатора (24ч):\nБлокировок нет.",
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="Назад к валидатору", callback_data="menu:validator")],
+                    ]
+                ),
+                callback=callback,
+            )
+            return
+
+        reason_counts: dict[str, int] = {}
+        platform_counts: dict[str, int] = {}
+        recent_lines: list[str] = []
+
+        for row in rows:
+            platform = str(row.get("platform") or "unknown").strip().lower()
+            platform_counts[platform] = platform_counts.get(platform, 0) + 1
+
+            payload_raw = str(row.get("payload") or "")
+            reasons: list[str] = []
+            with suppress(Exception):
+                payload_obj = json.loads(payload_raw)
+                raw_reasons = payload_obj.get("reasons", []) if isinstance(payload_obj, dict) else []
+                if isinstance(raw_reasons, list):
+                    reasons = [str(x).strip() for x in raw_reasons if str(x).strip()]
+            if not reasons:
+                reasons = ["без описания причины"]
+
+            for reason in reasons:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+        top_reasons = sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)[:8]
+        top_platforms = sorted(platform_counts.items(), key=lambda x: x[1], reverse=True)[:6]
+
+        for row in rows[:5]:
+            payload_raw = str(row.get("payload") or "")
+            first_reason = "без описания причины"
+            with suppress(Exception):
+                payload_obj = json.loads(payload_raw)
+                raw_reasons = payload_obj.get("reasons", []) if isinstance(payload_obj, dict) else []
+                if isinstance(raw_reasons, list) and raw_reasons:
+                    first_reason = str(raw_reasons[0]).strip() or first_reason
+            lead_id = row.get("lead_id")
+            platform = str(row.get("platform") or "unknown")
+            title = compact(str(row.get("lead_title") or "-"), 80)
+            url = str(row.get("lead_url") or "").strip()
+            recent_lines.append(
+                f"#{lead_id if lead_id is not None else '-'} | {platform}\n"
+                f"{title}\n"
+                f"Причина: {compact(first_reason, 120)}\n"
+                f"{url if url else '-'}"
+            )
+
+        lines: list[str] = [
+            "Причины блокировок валидатора (24ч):",
+            f"Всего блокировок: {len(rows)}",
+        ]
+        if top_platforms:
+            lines.append("Площадки: " + ", ".join(f"{name}={count}" for name, count in top_platforms))
+        lines.append("")
+        lines.append("Топ причин:")
+        for idx, (reason, count) in enumerate(top_reasons, start=1):
+            lines.append(f"{idx}. {compact(reason, 130)} — {count}")
+        lines.append("")
+        lines.append("Последние блокировки:")
+        lines.extend(recent_lines)
+
+        text = "\n".join(lines)
+        if len(text) > 3900:
+            text = text[:3890].rstrip() + "\n..."
+        await self._render_menu(
+            text,
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить причины", callback_data="menu:validator_reasons")],
+                    [InlineKeyboardButton(text="Назад к валидатору", callback_data="menu:validator")],
+                ]
+            ),
+            callback=callback,
+        )
 
     async def _toggle_validator_enabled(self, callback: CallbackQuery | None = None) -> None:
         current = await self._get_effective_validation_settings()
         enabled = bool(current["enabled"])
         await self.store.set_runtime_flag(self.VALIDATOR_RUNTIME_KEYS["enabled"], not enabled)
         note = "Валидатор включен." if not enabled else "Валидатор выключен."
+        await self._send_validator_menu(callback=callback, note=note)
+
+    async def _toggle_validator_spike_alert(self, callback: CallbackQuery | None = None) -> None:
+        current = await self._get_validator_spike_snapshot()
+        enabled = bool(current["enabled"])
+        await self.store.set_runtime_flag(self.VALIDATOR_RUNTIME_KEYS["spike_alert_enabled"], not enabled)
+        if enabled:
+            await self.store.set_runtime_flag(self.VALIDATOR_SPIKE_ALERT_ACTIVE_KEY, False)
+        note = "Spike-alert включен." if not enabled else "Spike-alert выключен."
         await self._send_validator_menu(callback=callback, note=note)
 
     async def _begin_validator_input(
@@ -1656,7 +1783,7 @@ class Worker:
             return
 
         current = await self._get_effective_validation_settings()
-        if normalized in {"min_chars", "max_chars", "similarity_window"}:
+        if normalized in {"min_chars", "max_chars", "similarity_window", "spike_threshold", "spike_window_minutes"}:
             try:
                 parsed_int = int(value.strip())
             except ValueError:
@@ -1672,6 +1799,10 @@ class Worker:
                 if clamped_int < int(current["min_chars"]):
                     await self.notifier.send_text("Макс. длина не может быть меньше мин. длины.")
                     return
+            elif normalized == "spike_threshold":
+                clamped_int = max(1, min(200, parsed_int))
+            elif normalized == "spike_window_minutes":
+                clamped_int = max(1, min(180, parsed_int))
             else:
                 clamped_int = max(5, min(200, parsed_int))
             await self.store.set_runtime_value(runtime_key, str(clamped_int))
@@ -1820,6 +1951,40 @@ class Worker:
             "max_chars": max_chars,
             "similarity_threshold": similarity_threshold,
             "similarity_window": similarity_window,
+        }
+
+    async def _get_validator_spike_snapshot(self) -> dict[str, object]:
+        window_minutes = int(settings.validator_spike_window_minutes)
+        threshold = int(settings.validator_spike_threshold)
+        enabled = bool(settings.validator_spike_alert_enabled)
+
+        raw_enabled = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["spike_alert_enabled"])
+        if raw_enabled:
+            enabled = raw_enabled in {"1", "true", "yes", "on"}
+
+        raw_threshold = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["spike_threshold"])
+        if raw_threshold:
+            with suppress(ValueError):
+                threshold = int(raw_threshold)
+
+        raw_window = await self.store.get_runtime_value(self.VALIDATOR_RUNTIME_KEYS["spike_window_minutes"])
+        if raw_window:
+            with suppress(ValueError):
+                window_minutes = int(raw_window)
+
+        window_minutes = max(1, min(180, window_minutes))
+        threshold = max(1, min(200, threshold))
+        count = await self.store.count_recent_events(
+            event_type="apply_validation_failed",
+            minutes=window_minutes,
+        )
+        active = await self.store.get_runtime_flag(self.VALIDATOR_SPIKE_ALERT_ACTIVE_KEY, default=False)
+        return {
+            "enabled": enabled,
+            "threshold": threshold,
+            "window_minutes": window_minutes,
+            "count": count,
+            "active": active,
         }
 
     async def _get_auto_apply_suspend_until(self) -> datetime | None:
@@ -1983,6 +2148,38 @@ class Worker:
                 None,
                 "platform_runtime_alert",
                 {"platform": platform, "state": "recovered", "found": found, "new": new},
+            )
+
+    async def _maybe_notify_validator_spike(self) -> None:
+        spike = await self._get_validator_spike_snapshot()
+        if not bool(spike["enabled"]):
+            return
+        window_minutes = int(spike["window_minutes"])
+        threshold = int(spike["threshold"])
+        failed_count = int(spike["count"])
+        is_active = await self.store.get_runtime_flag(self.VALIDATOR_SPIKE_ALERT_ACTIVE_KEY, default=False)
+
+        if failed_count >= threshold and not is_active:
+            await self.store.set_runtime_flag(self.VALIDATOR_SPIKE_ALERT_ACTIVE_KEY, True)
+            await self.notifier.send_text(
+                "Всплеск блокировок валидатора.\n"
+                f"За последние {window_minutes} мин: {failed_count} блокировок (порог {threshold}).\n"
+                "Проверь экран «Валидатор отклика -> Причины блокировок (24ч)».",
+                reply_markup=self._kb_main(),
+            )
+            await self.store.record_event(
+                None,
+                "validator_spike_alert",
+                {"count": failed_count, "threshold": threshold, "window_minutes": window_minutes},
+            )
+            return
+
+        if failed_count < threshold and is_active:
+            await self.store.set_runtime_flag(self.VALIDATOR_SPIKE_ALERT_ACTIVE_KEY, False)
+            await self.store.record_event(
+                None,
+                "validator_spike_recovered",
+                {"count": failed_count, "threshold": threshold, "window_minutes": window_minutes},
             )
 
     def _platform_state_label(self, state: str, error: str = "") -> str:
