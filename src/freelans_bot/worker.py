@@ -19,6 +19,7 @@ from freelans_bot.config.settings import settings
 from freelans_bot.core.orchestrator import Orchestrator
 from freelans_bot.integrations.telegram import TelegramNotifier
 from freelans_bot.services.proposal import ProposalService
+from freelans_bot.services.proposal_validation import ProposalValidator
 from freelans_bot.services.scoring import LeadScorer
 from freelans_bot.storage.db import SQLiteStore
 from freelans_bot.utils.text import compact
@@ -119,6 +120,7 @@ class Worker:
             store=self.store,
             scorer=LeadScorer(),
             proposal_service=ProposalService(),
+            proposal_validator=ProposalValidator(),
             notifier=self.notifier,
         )
 
@@ -265,6 +267,7 @@ class Worker:
             "found": summary["found"],
             "new": summary["new"],
             "applied": summary["applied"],
+            "validation_failed": summary.get("validation_failed", 0),
             "paused": self.paused,
             "auto_apply": self.auto_apply,
             "scan_interval_seconds": int(scan_settings["interval_seconds"]),
@@ -288,6 +291,7 @@ class Worker:
                 f"Найдено: {summary['found']}\n"
                 f"Новых: {summary['new']}\n"
                 f"Откликов: {summary['applied']}\n"
+                f"Отклонено валидатором: {summary.get('validation_failed', 0)}\n"
                 f"Активных платформ: {len(adapters)}\n"
                 f"Пауза: {self._yes_no(self.paused)}\n"
                 f"Автоотклик: {self._yes_no(self.auto_apply)}"
@@ -756,13 +760,14 @@ class Worker:
             display = str(cfg.get("display_name", platform))
             found = int(row.get("found") or 0)
             new = int(row.get("new") or 0)
+            validation_failed = int(row.get("validation_failed") or 0)
             error = str(row.get("error") or "").strip()
             preview = row.get("passed_preview") or []
             if not isinstance(preview, list):
                 preview = []
 
             lines.append("")
-            lines.append(f"{display}: found={found} | new={new}")
+            lines.append(f"{display}: found={found} | new={new} | blocked={validation_failed}")
             if error:
                 lines.append(f"Ошибка: {compact(error, 140)}")
                 continue

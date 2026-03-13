@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     openrouter_site_url: str = ""
     openrouter_app_name: str = "freelans-bot"
 
+    proposal_validation_enabled: bool = True
+    proposal_min_chars: int = 280
+    proposal_max_chars: int = 2200
+    proposal_similarity_threshold: float = 0.93
+    proposal_similarity_window: int = 30
+    proposal_banned_phrases: str = "guaranteed #1,100% guaranteed,предоплата на карту,только сегодня скидка"
+
     target_languages: str = "ru"
     keywords: str = "telegram bot,python,ai automation"
     focus_keywords: str = (
@@ -85,6 +92,10 @@ class Settings(BaseSettings):
     @property
     def language_list(self) -> set[str]:
         return {x.strip().lower() for x in self.target_languages.split(",") if x.strip()}
+
+    @property
+    def proposal_banned_list(self) -> list[str]:
+        return [x.strip().lower() for x in self.proposal_banned_phrases.split(",") if x.strip()]
 
     @property
     def portfolio_list(self) -> list[str]:

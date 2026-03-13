@@ -6,6 +6,7 @@ from freelans_bot.adapters.base import BasePlatformAdapter
 from freelans_bot.config.settings import settings
 from freelans_bot.integrations.telegram import TelegramNotifier
 from freelans_bot.services.proposal import ProposalService
+from freelans_bot.services.proposal_validation import ProposalValidator
 from freelans_bot.services.scoring import LeadScorer
 from freelans_bot.storage.db import SQLiteStore
 
@@ -17,12 +18,14 @@ class Orchestrator:
         store: SQLiteStore,
         scorer: LeadScorer,
         proposal_service: ProposalService,
+        proposal_validator: ProposalValidator,
         notifier: TelegramNotifier,
     ) -> None:
         self.adapters = adapters
         self.store = store
         self.scorer = scorer
         self.proposal_service = proposal_service
+        self.proposal_validator = proposal_validator
         self.notifier = notifier
 
     async def run_cycle(self, *, auto_apply: bool | None = None) -> dict[str, int]:
@@ -51,6 +54,7 @@ class Orchestrator:
         total_found = 0
         total_new = 0
         total_applied = 0
+        total_validation_failed = 0
         per_platform: list[dict[str, object]] = []
         should_apply = settings.auto_apply if auto_apply is None else auto_apply
         should_generate = auto_generate_drafts or should_apply
@@ -58,6 +62,11 @@ class Orchestrator:
         apply_day_limit = max(0, int(settings.auto_apply_day_limit))
         apply_attempts_last_hour = await self.store.count_apply_attempts_since(hours=1) if should_apply else 0
         apply_attempts_last_day = await self.store.count_apply_attempts_since(hours=24) if should_apply else 0
+        recent_proposals_cache = (
+            await self.store.recent_proposal_texts(limit=settings.proposal_similarity_window)
+            if should_apply
+            else []
+        )
         active_adapters = adapters if adapters is not None else self.adapters
         score_threshold = settings.min_score_to_apply if min_score_to_apply is None else max(0.0, min_score_to_apply)
         leads_limit = settings.max_leads_per_platform if max_leads_per_platform is None else max(1, max_leads_per_platform)
@@ -71,6 +80,7 @@ class Orchestrator:
             platform_found = 0
             platform_new = 0
             platform_error: str | None = None
+            platform_validation_failed = 0
             passed_preview: list[dict[str, object]] = []
             try:
                 since = await self.store.get_last_seen_time(adapter.name)
@@ -174,6 +184,28 @@ class Orchestrator:
                         )
                         continue
 
+                    validation = self.proposal_validator.validate(
+                        text=draft.text,
+                        lead_language=scored.lead.language,
+                        recent_proposals=recent_proposals_cache,
+                    )
+                    recent_proposals_cache.insert(0, draft.text)
+                    if len(recent_proposals_cache) > settings.proposal_similarity_window:
+                        recent_proposals_cache = recent_proposals_cache[: settings.proposal_similarity_window]
+                    if not validation.ok:
+                        platform_validation_failed += 1
+                        total_validation_failed += 1
+                        await self.store.record_event(
+                            lead_id,
+                            "apply_validation_failed",
+                            {
+                                "reasons": validation.reasons,
+                                "detected_language": validation.detected_language,
+                                "max_similarity": validation.max_similarity,
+                            },
+                        )
+                        continue
+
                     result = await adapter.apply(scored.lead, draft.text)
                     await self.store.mark_result(lead_id, result)
                     await self.notifier.send_apply_result(scored.lead.url, result)
@@ -204,6 +236,7 @@ class Orchestrator:
                         "new": platform_new,
                         "error": platform_error,
                         "passed_preview": passed_preview,
+                        "validation_failed": platform_validation_failed,
                     }
                 )
 
@@ -211,6 +244,7 @@ class Orchestrator:
             "found": total_found,
             "new": total_new,
             "applied": total_applied,
+            "validation_failed": total_validation_failed,
             "platforms": per_platform,
         }
 

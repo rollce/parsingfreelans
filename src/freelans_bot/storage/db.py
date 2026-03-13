@@ -712,6 +712,26 @@ class SQLiteStore:
             )
         return out
 
+    async def recent_proposal_texts(self, *, limit: int = 30) -> list[str]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT text
+                FROM proposals
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            )
+            rows = await cur.fetchall()
+        out: list[str] = []
+        for row in rows:
+            text = str(row["text"] or "").strip()
+            if text:
+                out.append(text)
+        return out
+
     async def get_runtime_flag(self, key: str, default: bool = False) -> bool:
         value = await self.get_runtime_value(key)
         if value is None:

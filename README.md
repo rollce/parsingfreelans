@@ -158,6 +158,10 @@ curl "http://127.0.0.1:8000/learning/examples?language=ru&limit=5"
 
 - `AUTO_APPLY=false` — полуавтомат (рекомендуется для старта).
 - `AUTO_APPLY_HOUR_LIMIT=6` и `AUTO_APPLY_DAY_LIMIT=30` — лимиты автооткликов (за час/за сутки).
+- `PROPOSAL_VALIDATION_ENABLED=true` — проверка отклика перед автоотправкой.
+- `PROPOSAL_MIN_CHARS` / `PROPOSAL_MAX_CHARS` — рамки длины отклика.
+- `PROPOSAL_SIMILARITY_THRESHOLD` / `PROPOSAL_SIMILARITY_WINDOW` — анти-шаблон перед apply.
+- `PROPOSAL_BANNED_PHRASES` — стоп-фразы, блокирующие автоотправку.
 - `POLL_INTERVAL_SECONDS=5` — интервал между площадками (round-robin).
 - Runtime-настройка из Telegram имеет приоритет над `POLL_INTERVAL_SECONDS`.
 - `TELEGRAM_NOTIFY_BATCH_SIZE=8` — сколько лидов отправлять в Telegram за один проход.
