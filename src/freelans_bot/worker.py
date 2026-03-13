@@ -125,6 +125,7 @@ class Worker:
                     await self._run_cycle(trigger="manual")
                 elif not self.paused:
                     await self._run_cycle(trigger="timer")
+                await self._dispatch_pending_lead_notifications()
                 elapsed = time.monotonic() - started_at
                 await self._wait_for_next_tick(elapsed_seconds=elapsed)
             except asyncio.CancelledError:
@@ -188,6 +189,29 @@ class Worker:
                 f"Пауза: {self._yes_no(self.paused)}\n"
                 f"Автоотклик: {self._yes_no(self.auto_apply)}"
             )
+
+    async def _dispatch_pending_lead_notifications(self) -> int:
+        pending = await self.store.pending_lead_notifications(
+            limit=settings.telegram_notify_batch_size,
+            min_score=settings.min_score_to_apply,
+            exclude_skipped=True,
+            retry_after_seconds=settings.telegram_notify_retry_after_seconds,
+            max_attempts=settings.telegram_notify_max_attempts,
+        )
+        sent = 0
+        for lead_id, scored in pending:
+            try:
+                await self.notifier.send_lead_scored(scored, lead_id=lead_id)
+                await self.store.mark_lead_notified(lead_id)
+                await self.store.record_event(lead_id, "lead_delivered", {"score": scored.score})
+                sent += 1
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                await self.store.mark_lead_notify_failed(lead_id, error)
+                await self.store.record_event(lead_id, "lead_delivery_failed", {"error": error})
+        if sent:
+            await self.store.record_event(None, "lead_delivery_batch", {"sent": sent, "requested": len(pending)})
+        return sent
 
     async def _get_enabled_adapters(self) -> list[BasePlatformAdapter]:
         result: list[BasePlatformAdapter] = []
@@ -409,12 +433,18 @@ class Worker:
     async def _send_status(self, callback: CallbackQuery | None = None, header: str | None = None) -> None:
         stats = await self.store.stats()
         adapters = await self._get_enabled_adapters()
+        pending_delivery = await self.store.count_pending_lead_notifications(
+            min_score=settings.min_score_to_apply,
+            exclude_skipped=True,
+            max_attempts=settings.telegram_notify_max_attempts,
+        )
         text = (
             f"{header + '\n' if header else ''}"
             "Статус:\n"
             f"Пауза: {self._yes_no(self.paused)}\n"
             f"Автоотклик: {self._yes_no(self.auto_apply)}\n"
             f"Активных платформ: {len(adapters)}\n"
+            f"К отправке в Telegram: {pending_delivery}\n"
             f"Новые: {stats.get('new', 0)}\n"
             f"Черновики: {stats.get('drafted', 0)}\n"
             f"Отправлено: {stats.get('applied', 0)}\n"
@@ -446,12 +476,13 @@ class Worker:
         keyboard_rows: list[list[InlineKeyboardButton]] = []
         for item in leads:
             published_text = self._format_lead_publication(item)
+            delivered = "Да" if item.get("sent_at") else "Нет"
             lines.append(
                 "\n".join(
                     [
                         f"#{item['id']} | {item['platform']} | score={item['score']:.2f}",
                         f"{compact(item['title'], 110)}",
-                        f"Бюджет: {item['budget'] or '-'} | Статус: {item['status']}",
+                        f"Бюджет: {item['budget'] or '-'} | Статус: {item['status']} | Доставлено: {delivered}",
                         f"Опубликовано: {published_text}",
                         item["url"],
                     ]

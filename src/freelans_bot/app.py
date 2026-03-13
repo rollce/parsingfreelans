@@ -43,6 +43,11 @@ async def stats() -> dict:
     if not worker:
         return {"error": "worker is not started"}
     data = await worker.store.stats()
+    data["pending_delivery"] = await worker.store.count_pending_lead_notifications(
+        min_score=settings.min_score_to_apply,
+        exclude_skipped=True,
+        max_attempts=settings.telegram_notify_max_attempts,
+    )
     data["paused"] = worker.paused
     data["auto_apply"] = worker.auto_apply
     return data

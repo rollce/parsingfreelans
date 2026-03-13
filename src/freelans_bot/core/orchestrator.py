@@ -84,7 +84,11 @@ class Orchestrator:
                         )
                         continue
 
-                    await self.notifier.send_lead_scored(scored, lead_id=lead_id)
+                    await self.store.record_event(
+                        lead_id,
+                        "lead_queued_for_delivery",
+                        {"score": scored.score},
+                    )
 
                     if not should_generate:
                         continue

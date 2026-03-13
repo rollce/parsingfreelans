@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     telegram_chat_id: str
     telegram_control_enabled: bool = True
     telegram_control_poll_timeout: int = 20
+    telegram_notify_batch_size: int = 8
+    telegram_notify_retry_after_seconds: int = 45
+    telegram_notify_max_attempts: int = 200
 
     llm_provider: str = "openrouter"
 

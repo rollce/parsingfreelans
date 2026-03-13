@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -42,6 +42,10 @@ class SQLiteStore:
                   proposal_url TEXT,
                   chat_url TEXT,
                   error_message TEXT,
+                  notified_at TEXT,
+                  notify_attempts INTEGER NOT NULL DEFAULT 0,
+                  notify_last_attempt_at TEXT,
+                  notify_last_error TEXT,
                   discovered_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL,
                   UNIQUE(platform, url)
@@ -102,10 +106,24 @@ class SQLiteStore:
         cur = await db.execute("PRAGMA table_info(leads)")
         rows = await cur.fetchall()
         columns = {str(row[1]) for row in rows}
+        added_notified_at = False
         if "published_at" not in columns:
             await db.execute("ALTER TABLE leads ADD COLUMN published_at TEXT")
         if "raw_date" not in columns:
             await db.execute("ALTER TABLE leads ADD COLUMN raw_date TEXT")
+        if "notified_at" not in columns:
+            await db.execute("ALTER TABLE leads ADD COLUMN notified_at TEXT")
+            added_notified_at = True
+        if "notify_attempts" not in columns:
+            await db.execute("ALTER TABLE leads ADD COLUMN notify_attempts INTEGER NOT NULL DEFAULT 0")
+        if "notify_last_attempt_at" not in columns:
+            await db.execute("ALTER TABLE leads ADD COLUMN notify_last_attempt_at TEXT")
+        if "notify_last_error" not in columns:
+            await db.execute("ALTER TABLE leads ADD COLUMN notify_last_error TEXT")
+        if added_notified_at:
+            # Existing rows might already have been delivered by previous bot versions.
+            # Backfill sent marker once to avoid replaying old backlog after migration.
+            await db.execute("UPDATE leads SET notified_at = updated_at WHERE notified_at IS NULL")
 
     async def get_last_seen_time(self, platform: str) -> datetime | None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -276,7 +294,8 @@ class SQLiteStore:
                 """
                 SELECT
                   id, platform, title, url, budget, language,
-                  score, status, published_at, raw_date, discovered_at, updated_at
+                  score, status, published_at, raw_date, notified_at, notify_attempts, notify_last_error,
+                  discovered_at, updated_at
                 FROM leads
                 WHERE """
                 + where_clause
@@ -302,11 +321,138 @@ class SQLiteStore:
                     "status": row["status"],
                     "published_at": row["published_at"],
                     "raw_date": row["raw_date"],
+                    "sent_at": row["notified_at"],
+                    "notify_attempts": int(row["notify_attempts"] or 0),
+                    "notify_last_error": row["notify_last_error"],
                     "discovered_at": row["discovered_at"],
                     "updated_at": row["updated_at"],
                 }
             )
         return out
+
+    async def pending_lead_notifications(
+        self,
+        *,
+        limit: int = 10,
+        min_score: float = 0.0,
+        exclude_skipped: bool = True,
+        retry_after_seconds: int = 45,
+        max_attempts: int = 200,
+    ) -> list[tuple[int, ScoredLead]]:
+        cutoff = (datetime.utcnow() - timedelta(seconds=max(0, retry_after_seconds))).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            where_parts = ["score >= ?", "notified_at IS NULL", "COALESCE(notify_attempts, 0) < ?"]
+            params: list[object] = [min_score, max(1, max_attempts)]
+            if exclude_skipped:
+                where_parts.append("status != ?")
+                params.append(LeadStatus.SKIPPED.value)
+            where_parts.append("(notify_last_attempt_at IS NULL OR notify_last_attempt_at <= ?)")
+            params.append(cutoff)
+            where_clause = " AND ".join(where_parts)
+            cur = await db.execute(
+                """
+                SELECT
+                  id, platform, external_id, title, url, description, budget, language,
+                  score, score_reasons, published_at, raw_date
+                FROM leads
+                WHERE """
+                + where_clause
+                + """
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, limit)]),
+            )
+            rows = await cur.fetchall()
+
+        result: list[tuple[int, ScoredLead]] = []
+        for row in rows:
+            reasons_raw = row["score_reasons"] or "[]"
+            try:
+                reasons = json.loads(reasons_raw)
+                if not isinstance(reasons, list):
+                    reasons = [str(reasons)]
+            except Exception:
+                reasons = []
+            lead = Lead(
+                platform=row["platform"],
+                external_id=row["external_id"],
+                title=row["title"],
+                url=row["url"],
+                description=row["description"] or "",
+                budget=row["budget"],
+                language=row["language"],
+                published_at=self._parse_datetime(row["published_at"]),
+                meta={"raw_date": row["raw_date"] or ""},
+            )
+            result.append(
+                (
+                    int(row["id"]),
+                    ScoredLead(
+                        lead=lead,
+                        score=float(row["score"] or 0.0),
+                        reasons=[str(x) for x in reasons],
+                    ),
+                )
+            )
+        return result
+
+    async def mark_lead_notified(self, lead_id: int) -> None:
+        now = datetime.utcnow().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE leads
+                SET notified_at = ?,
+                    notify_last_attempt_at = ?,
+                    notify_last_error = NULL,
+                    notify_attempts = COALESCE(notify_attempts, 0) + 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, now, lead_id),
+            )
+            await db.commit()
+
+    async def mark_lead_notify_failed(self, lead_id: int, error: str) -> None:
+        now = datetime.utcnow().isoformat()
+        err = (error or "").strip()[:700]
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE leads
+                SET notify_last_attempt_at = ?,
+                    notify_last_error = ?,
+                    notify_attempts = COALESCE(notify_attempts, 0) + 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, err, now, lead_id),
+            )
+            await db.commit()
+
+    async def count_pending_lead_notifications(
+        self,
+        *,
+        min_score: float = 0.0,
+        exclude_skipped: bool = True,
+        max_attempts: int = 200,
+    ) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            where_parts = ["score >= ?", "notified_at IS NULL", "COALESCE(notify_attempts, 0) < ?"]
+            params: list[object] = [min_score, max(1, max_attempts)]
+            if exclude_skipped:
+                where_parts.append("status != ?")
+                params.append(LeadStatus.SKIPPED.value)
+            where_clause = " AND ".join(where_parts)
+            cur = await db.execute(
+                f"SELECT COUNT(*) as cnt FROM leads WHERE {where_clause}",
+                tuple(params),
+            )
+            row = await cur.fetchone()
+            return int(row["cnt"] if row else 0)
 
     async def find_lead_id_by_url(self, url: str) -> int | None:
         async with aiosqlite.connect(self.db_path) as db:
