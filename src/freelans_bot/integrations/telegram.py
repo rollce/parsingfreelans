@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -12,12 +15,17 @@ class TelegramNotifier:
     def __init__(self) -> None:
         self.bot = Bot(token=settings.telegram_bot_token)
         self.chat_id = settings.telegram_chat_id
+        self._display_tz = ZoneInfo("Europe/Moscow")
 
     async def send_text(self, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
         await self.bot.send_message(chat_id=self.chat_id, text=text, reply_markup=reply_markup)
 
     async def send_lead_scored(self, scored: ScoredLead, lead_id: int | None = None) -> None:
         lead = scored.lead
+        published_text = self._format_publication_time(
+            published_at=lead.published_at,
+            raw_date=(lead.meta.get("raw_date", "") if lead.meta else ""),
+        )
         lead_line = f"ID лида: {lead_id}\n" if lead_id is not None else ""
         text = (
             f"[Новый заказ] {lead.platform}\n"
@@ -25,6 +33,7 @@ class TelegramNotifier:
             f"Оценка: {scored.score:.2f}\n"
             f"Заголовок: {lead.title}\n"
             f"Бюджет: {lead.budget or '-'}\n"
+            f"Опубликовано: {published_text}\n"
             f"Язык: {lead.language or 'unknown'}\n"
             f"Причины: {'; '.join(scored.reasons)}\n"
             f"Ссылка: {lead.url}\n"
@@ -80,3 +89,14 @@ class TelegramNotifier:
 
     async def close(self) -> None:
         await self.bot.session.close()
+
+    def _format_publication_time(self, *, published_at: datetime | None, raw_date: str) -> str:
+        raw = (raw_date or "").strip()
+        if raw:
+            return raw
+        if not published_at:
+            return "-"
+        dt = published_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M МСК")

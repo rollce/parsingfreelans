@@ -4,7 +4,9 @@ import asyncio
 import re
 import time
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -88,6 +90,7 @@ class Worker:
 
         self._pending_profile_input: dict[str, str] = {}
         self._rotation_index: int = 0
+        self._display_tz = ZoneInfo("Europe/Moscow")
 
     async def start(self) -> None:
         await self.store.init()
@@ -442,12 +445,14 @@ class Worker:
         lines: list[str] = ["Последние вакансии:"]
         keyboard_rows: list[list[InlineKeyboardButton]] = []
         for item in leads:
+            published_text = self._format_lead_publication(item)
             lines.append(
                 "\n".join(
                     [
                         f"#{item['id']} | {item['platform']} | score={item['score']:.2f}",
                         f"{compact(item['title'], 110)}",
                         f"Бюджет: {item['budget'] or '-'} | Статус: {item['status']}",
+                        f"Опубликовано: {published_text}",
                         item["url"],
                     ]
                 )
@@ -853,6 +858,21 @@ class Worker:
 
     def _yes_no(self, value: bool) -> str:
         return "Да" if value else "Нет"
+
+    def _format_lead_publication(self, item: dict[str, object]) -> str:
+        raw_date = str(item.get("raw_date") or "").strip()
+        if raw_date:
+            return raw_date
+        published_at = str(item.get("published_at") or "").strip()
+        if not published_at:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(published_at)
+        except ValueError:
+            return published_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(self._display_tz).strftime("%d.%m.%Y %H:%M МСК")
 
     async def _generate_proposal_for_lead(
         self,

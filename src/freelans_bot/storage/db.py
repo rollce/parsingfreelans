@@ -95,7 +95,17 @@ class SQLiteStore:
                 );
                 """
             )
+            await self._ensure_leads_columns(db)
             await db.commit()
+
+    async def _ensure_leads_columns(self, db: aiosqlite.Connection) -> None:
+        cur = await db.execute("PRAGMA table_info(leads)")
+        rows = await cur.fetchall()
+        columns = {str(row[1]) for row in rows}
+        if "published_at" not in columns:
+            await db.execute("ALTER TABLE leads ADD COLUMN published_at TEXT")
+        if "raw_date" not in columns:
+            await db.execute("ALTER TABLE leads ADD COLUMN raw_date TEXT")
 
     async def get_last_seen_time(self, platform: str) -> datetime | None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -111,6 +121,8 @@ class SQLiteStore:
     async def upsert_scored_lead(self, scored: ScoredLead) -> tuple[int, bool]:
         lead = scored.lead
         now = datetime.utcnow().isoformat()
+        published_at = lead.published_at.isoformat() if lead.published_at else None
+        raw_date = (lead.meta.get("raw_date", "") if lead.meta else "").strip()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
@@ -122,10 +134,19 @@ class SQLiteStore:
                 await db.execute(
                     """
                     UPDATE leads
-                    SET score = ?, score_reasons = ?, updated_at = ?
+                    SET score = ?, score_reasons = ?, updated_at = ?,
+                        published_at = COALESCE(published_at, ?),
+                        raw_date = COALESCE(NULLIF(raw_date, ''), NULLIF(?, ''))
                     WHERE id = ?
                     """,
-                    (scored.score, json.dumps(scored.reasons, ensure_ascii=False), now, existing["id"]),
+                    (
+                        scored.score,
+                        json.dumps(scored.reasons, ensure_ascii=False),
+                        now,
+                        published_at,
+                        raw_date,
+                        existing["id"],
+                    ),
                 )
                 await db.commit()
                 return int(existing["id"]), False
@@ -134,8 +155,8 @@ class SQLiteStore:
                 """
                 INSERT INTO leads (
                   platform, external_id, title, url, description, budget, language,
-                  score, score_reasons, status, discovered_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  score, score_reasons, status, published_at, raw_date, discovered_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lead.platform,
@@ -148,6 +169,8 @@ class SQLiteStore:
                     scored.score,
                     json.dumps(scored.reasons, ensure_ascii=False),
                     LeadStatus.NEW.value,
+                    published_at,
+                    raw_date or None,
                     now,
                     now,
                 ),
@@ -253,7 +276,7 @@ class SQLiteStore:
                 """
                 SELECT
                   id, platform, title, url, budget, language,
-                  score, status, discovered_at, updated_at
+                  score, status, published_at, raw_date, discovered_at, updated_at
                 FROM leads
                 WHERE """
                 + where_clause
@@ -277,6 +300,8 @@ class SQLiteStore:
                     "language": row["language"],
                     "score": float(row["score"] or 0),
                     "status": row["status"],
+                    "published_at": row["published_at"],
+                    "raw_date": row["raw_date"],
                     "discovered_at": row["discovered_at"],
                     "updated_at": row["updated_at"],
                 }
@@ -297,7 +322,7 @@ class SQLiteStore:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 """
-                SELECT platform, title, url, description, budget, language, external_id
+                SELECT platform, title, url, description, budget, language, external_id, published_at, raw_date
                 FROM leads
                 WHERE id = ?
                 LIMIT 1
@@ -315,7 +340,18 @@ class SQLiteStore:
                 budget=row["budget"],
                 language=row["language"],
                 external_id=row["external_id"],
+                published_at=self._parse_datetime(row["published_at"]),
+                meta={"raw_date": row["raw_date"] or ""},
             )
+
+    def _parse_datetime(self, value: str | None) -> datetime | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
 
     async def save_feedback(self, lead_id: int, verdict: str, note: str = "") -> None:
         verdict_norm = verdict.strip().lower()
