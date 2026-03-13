@@ -1,14 +1,24 @@
-# Freelans Bot (RU-first, Full-Auto PoC)
+# Freelans Bot
 
-Автоматический пайплайн для фриланс-площадок:
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-green)
+![Telegram](https://img.shields.io/badge/Telegram-inline--bot-2AABEE)
+![Status](https://img.shields.io/badge/Status-RU--first%20PoC-orange)
 
-1. Парсинг новых проектов с площадок.
-2. Скоринг релевантности под ваш стек.
-3. Генерация отклика через LLM.
-4. Полуавтомат: генерация отклика по кнопке из Telegram (автоотправка отключена по умолчанию).
-5. Уведомление в Telegram со ссылками на объявление/отклик/чат.
+> **RU-first open-source PoC** for end-to-end freelance flow automation:
+> marketplace parsing, lead scoring, LLM proposal generation, and Telegram control.
 
-## Поддерживаемые площадки (в конфиге)
+## What This Project Does
+
+**Freelans Bot** automates the following pipeline:
+
+1. Collects new projects from freelance marketplaces.
+2. Filters and scores leads for your target stack.
+3. Generates proposal drafts via LLM (*semi-auto from Telegram buttons*).
+4. Delivers leads and statuses to Telegram.
+5. Runs delivery/infrastructure diagnostics through runtime menus and scripts.
+
+## Supported Platforms
 
 - `flru`
 - `freelance_ru`
@@ -18,26 +28,32 @@
 - `yandex_uslugi`
 - `freelancejob`
 
-## Архитектура
+Notes:
 
-- `src/freelans_bot/adapters/` — адаптеры площадок (универсальный Playwright-адаптер + конфиг)
-- `src/freelans_bot/core/orchestrator.py` — пайплайн `collect -> score -> draft -> apply -> notify`
-- `src/freelans_bot/services/` — скоринг и генератор откликов
-- `src/freelans_bot/integrations/telegram.py` — уведомления в Telegram
-- `src/freelans_bot/storage/db.py` — SQLite-хранилище лидов/событий/откликов
-- `src/freelans_bot/app.py` — FastAPI + фоновый воркер (удобно для Railway)
+- `yandex_uslugi` uses `feed_urls` (multiple search streams).
+- `youdo` uses an anti-bot profile (jitter/fingerprint/proxy hooks).
 
-## Быстрый старт
+## Architecture
+
+- `src/freelans_bot/adapters/` - platform adapters and Playwright logic.
+- `src/freelans_bot/core/orchestrator.py` - pipeline: `collect -> score -> draft -> apply -> notify`.
+- `src/freelans_bot/services/` - scoring, proposal generation, selector auditing.
+- `src/freelans_bot/integrations/telegram.py` - Telegram notifier.
+- `src/freelans_bot/storage/db.py` - SQLite data layer (leads, events, metrics).
+- `src/freelans_bot/app.py` - FastAPI app + background worker.
+
+## Quick Start
 
 ```bash
 cp .env.example .env
-# заполните TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID и OPENROUTER_API_KEY
+# Fill TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, OPENROUTER_API_KEY
+
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/playwright install chromium
 ```
 
-Сохранить сессии логина (по площадкам):
+### Save Platform Sessions
 
 ```bash
 .venv/bin/python scripts/save_session.py --list
@@ -50,142 +66,159 @@ python3 -m venv .venv
 .venv/bin/python scripts/save_session.py --platform freelancejob
 ```
 
-Как проходит логин:
-
-1. Запускаешь команду `save_session.py` для нужной платформы.
-2. Открывается браузер Chromium.
-3. Логинишься как обычно (пароль, код, капча).
-4. Убедись, что вход выполнен (виден аккаунт/аватар).
-5. Возвращаешься в терминал и жмешь `Enter`.
-6. Скрипт сохраняет сессию в папку `state/`.
-
-Если у площадки сменился URL входа, передай его вручную:
+Custom login URL (if needed):
 
 ```bash
-.venv/bin/python scripts/save_session.py --platform youdo --login-url "https://youdo.com/нужный-url"
+.venv/bin/python scripts/save_session.py --platform youdo --login-url "https://youdo.com/<login-url>"
 ```
 
-Запуск локально:
+### Run Locally
 
 ```bash
 .venv/bin/python -m uvicorn freelans_bot.app:app --host 0.0.0.0 --port 8000
 ```
 
-Проверка:
+API checks:
 
 - `GET /health`
 - `GET /stats`
 - `GET /events`
+- `GET /leads`
 
-## Управление через Telegram
+## Telegram Control
 
-Команд не нужно. Просто отправь боту любое сообщение, и откроется меню.
+No command-driven UX is required. The bot uses **inline buttons** and edits a single message thread.
 
-Дальше все действия через inline-кнопки:
+Main sections:
 
-1. `Статус` — состояние бота.
-2. `Вакансии` — последние найденные вакансии (ссылки, скор, статус, бюджет).
-3. `Поток` — разбор последнего цикла: почему лиды прошли фильтр по каждой площадке.
-4. `Логи` — ссылки и статус по последним лидам: объявление, отклик, чат, доставка.
-5. `Аккаунты` — список бирж, карточка каждой биржи, включение/выключение мониторинга, удаление сессии.
-6. `Профиль` — общий профиль (имя/резюме/аватар/портфолио).
-7. `Настройки` — пауза, автоотклик, фильтры, режим сканирования, языковой режим, валидатор.
-8. `Запустить цикл` — ручной запуск цикла парсинга.
+- **Status**
+- **Leads**
+- **Flow**
+- **Logs**
+- **Accounts**
+- **Profile**
+- **Settings**
+- **Reports**
 
-В `Настройках` есть кнопка `Стоп автоотклик` для мгновенной остановки автоотправки.
-Также есть кнопка `Отключить до завтра 09:00 МСК`: автоотклик сам включится в указанное время.
+Runtime tuning is supported without redeploy: filters, intervals, alerts, backup/cleanup,
+delivery-health, heartbeat, pending reanimate, failover, and related limits.
 
-Навигация по меню работает в одном сообщении: при кликах бот редактирует текущий экран, а не спамит новыми сообщениями.
-Автоматический цикл работает по кругу: каждые ~5 секунд бот проверяет следующую биржу.
-Таким образом биржи сканируются по очереди без простоев и с постоянным потоком.
-Параметры цикла (интервал, глубина страниц, лимит лидов, anti-flood) меняются прямо в Telegram и применяются сразу.
-Языковой режим (`Только RU`, `Только EN`, `RU + EN`) тоже переключается из Telegram и влияет на приоритет потока.
-Пороги валидатора отклика (длина/похожесть) также меняются из Telegram без деплоя.
-Периодические отчеты по таймеру отключены, отправляются именно карточки вакансий.
-Скипнутые заявки в `Вакансии` не показываются.
-Экран `Поток` показывает причины прохождения фильтра по последнему циклу.
-Экран `Логи` показывает ссылки на объявление/отклик/чат и текущий статус отправки.
-В разделе `Валидатор отклика` есть экран `Причины блокировок (24ч)` с топом ошибок.
-При всплеске блокировок валидатора бот отправляет отдельный alert в Telegram.
-Параметры spike-alert (вкл/выкл, порог, окно) тоже настраиваются из Telegram.
+## Quality & Diagnostics Scripts
 
-Внутри `Accounts` можно заполнить анкету для каждой площадки:
-
-- имя на бирже
-- заголовок профиля
-- описание
-- портфолио
-- ставки (фикс/почасовая)
-- URL страницы профиля
-
-Эти данные подмешиваются в генерацию отклика для соответствующей платформы.
-После редактирования анкеты бот автоматически запускает синхронизацию профиля на сайт.
-Также есть ручная кнопка `Синхронизировать на сайт` в карточке площадки.
-
-В карточке объявления есть кнопки:
-
-- `Сгенерировать отклик` — быстрый черновик
-- `Свой запрос к ИИ` — сначала вводишь свой текст-пожелание, затем бот генерирует отклик с учетом этого запроса
-
-В экране `Вакансии` эти же действия доступны по каждому `ID`.
-
-## Обучение качества откликов (без fine-tune)
-
-Схема:
-
-1. Бот отправляет отклик.
-2. Ты оцениваешь результат через inline-кнопки `Хорошо` и `Плохо`.
-3. `good`-отклики попадают в базу успешных примеров.
-4. При новых откликах бот подмешивает эти примеры в промпт и пишет лучше в твоем стиле.
-
-Пример отправки фидбека:
+### Base Pre-deploy Pack
 
 ```bash
-.venv/bin/python scripts/mark_feedback.py \
-  --url "https://example.com/job/123" \
-  --verdict good \
-  --note "ответил в чате и попросил созвон"
+.venv/bin/python scripts/check_max_lines.py --max-lines 1000 --include-untracked
+.venv/bin/python scripts/check_selectors_registry.py --min-selectors 6
+.venv/bin/python scripts/check_secrets_hygiene.py --include-untracked --max-issues 20
 ```
 
-Посмотреть накопленные успешные примеры:
+### Secrets Check (No Plain Secret Output)
 
 ```bash
-curl "http://127.0.0.1:8000/learning/examples?language=ru&limit=5"
+# machine output
+.venv/bin/python scripts/check_secrets_hygiene.py --include-untracked --json --json-pretty
+
+# save JSON artifact
+.venv/bin/python scripts/check_secrets_hygiene.py --include-untracked --json --json-out tmp/secrets-check.json
+
+# exclude service folders
+.venv/bin/python scripts/check_secrets_hygiene.py --include-untracked --exclude-path tmp/,backups/
 ```
 
-## Что нужно докрутить перед боевым запуском
+The script masks sensitive matches in logs (`1234...2345`, `sk-o...6789`) to prevent CI log leaks.
 
-- Актуализировать CSS-селекторы в `src/freelans_bot/config/platforms.yaml`.
-- Добавить анти-дубликаты по `external_id`, если площадка его отдает явно.
-- Подключить прокси/антикапчу при необходимости.
+### Delivery Diagnostics
 
-## Важные переменные окружения
+```bash
+# full report to Telegram
+.venv/bin/python scripts/send_delivery_diagnostics_report.py --hours 24
 
-- `AUTO_APPLY=false` — полуавтомат (рекомендуется для старта).
-- `AUTO_APPLY_HOUR_LIMIT=6` и `AUTO_APPLY_DAY_LIMIT=30` — лимиты автооткликов (за час/за сутки).
-- `PROPOSAL_VALIDATION_ENABLED=true` — проверка отклика перед автоотправкой.
-- `PROPOSAL_MIN_CHARS` / `PROPOSAL_MAX_CHARS` — рамки длины отклика.
-- `PROPOSAL_SIMILARITY_THRESHOLD` / `PROPOSAL_SIMILARITY_WINDOW` — анти-шаблон перед apply.
-- `PROPOSAL_BANNED_PHRASES` — стоп-фразы, блокирующие автоотправку.
-- Runtime-настройка валидатора из Telegram имеет приоритет над env-порогами.
-- `VALIDATOR_SPIKE_ALERT_ENABLED`, `VALIDATOR_SPIKE_THRESHOLD`, `VALIDATOR_SPIKE_WINDOW_MINUTES` — алерт по всплеску блокировок.
-- `POLL_INTERVAL_SECONDS=5` — интервал между площадками (round-robin).
-- Runtime-настройка из Telegram имеет приоритет над `POLL_INTERVAL_SECONDS`.
-- `TELEGRAM_NOTIFY_BATCH_SIZE=8` — сколько лидов отправлять в Telegram за один проход.
-- `TELEGRAM_NOTIFY_RETRY_AFTER_SECONDS=45` — пауза перед повторной отправкой неудачных уведомлений.
-- `TELEGRAM_NOTIFY_MAX_ATTEMPTS=200` — максимум попыток доставки для одного лида.
-- `TELEGRAM_PLATFORM_BURST_LIMIT=12` и `TELEGRAM_PLATFORM_BURST_WINDOW_MINUTES=10` — anti-flood на поток по одной бирже (`0` отключает лимит, можно переопределить в Telegram).
-- `/stats` показывает runtime по площадкам: `ok/error`, `last_success_at`, `last_found`, `last_new`.
-- При истекшей сессии площадки бот отправляет отдельное уведомление и помечает состояние как `Сессия истекла`.
-- `MIN_SCORE_TO_APPLY=0.45` — минимальный скор для автоотклика.
-- `MAX_PAGES_PER_PLATFORM_SCAN=8` — глубина обхода страниц на площадке.
-- Runtime-настройка из Telegram имеет приоритет над `MAX_PAGES_PER_PLATFORM_SCAN` и `MAX_LEADS_PER_PLATFORM`.
-- `PLAYWRIGHT_FEED_TIMEOUT_MS=15000` — таймаут загрузки страницы ленты (не дает зависать на одной бирже).
-- `PLAYWRIGHT_CARDS_WAIT_TIMEOUT_MS=5000` — сколько ждать карточки заказов перед переходом к следующей площадке.
-- `KEYWORDS` / `NEGATIVE_KEYWORDS` — базовый фильтр качества.
-- `FOCUS_KEYWORDS` — фокус на тематике (Python, Telegram-боты, сайты, автоматизации).
-- `STRICT_TOPIC_FILTER=true` — строгий режим: лид без совпадений по `FOCUS_KEYWORDS` получает `score=0` и не отправляется в Telegram.
-- `FREELANCER_PROFILE`, `PORTFOLIO_URLS` — контекст для генерации отклика.
-- `LLM_PROVIDER=openrouter` — использовать OpenRouter.
-- `OPENROUTER_API_KEY` — ключ OpenRouter.
-- `OPENROUTER_MODEL` — модель в формате OpenRouter (`openai/gpt-4.1-mini`, `anthropic/claude-3.7-sonnet`, и т.д.).
+# state JSON
+.venv/bin/python scripts/send_delivery_diagnostics_report.py --hours 24 --only-alert-state --state-json --state-out tmp/delivery-state.json
+
+# only on state change
+.venv/bin/python scripts/send_delivery_diagnostics_report.py --hours 24 --dry-run --only-on-state-change --state-in tmp/delivery-state.json --stdout-summary --quiet
+```
+
+### State Contract & Diff
+
+```bash
+# validate state contract/types
+.venv/bin/python scripts/check_delivery_state_contract.py --state tmp/delivery-state.json --strict-types --json --json-pretty
+
+# diff two snapshots
+.venv/bin/python scripts/diff_delivery_state.py --prev tmp/state-prev.json --curr tmp/state-curr.json --ignore-generated-at --exit-on-change
+
+# diff with filters + artifacts
+.venv/bin/python scripts/diff_delivery_state.py \
+  --prev tmp/state-prev.json \
+  --curr tmp/state-curr.json \
+  --field alert_state,alert_components \
+  --required-field alert_state,alert_components \
+  --json --json-pretty --json-out tmp/state-diff.json \
+  --text-out tmp/state-diff.txt
+```
+
+## Railway Deployment
+
+`Dockerfile` already contains pre-check gates. Deployment fails if:
+
+- a file exceeds `1000` lines,
+- selector registry is invalid,
+- a secret pattern is found in tracked/untracked workspace files.
+
+Minimum web service command:
+
+```bash
+python -m uvicorn freelans_bot.app:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Cron examples:
+
+```bash
+python scripts/send_selectors_report.py --min-selectors 6
+python scripts/send_weekly_digest.py --days 7
+python scripts/send_weekly_super_report.py --days 7
+python scripts/send_stale_pending_report.py --days 45 --threshold 40
+python scripts/send_delivery_health_report.py --hours 24
+python scripts/send_delivery_mini_report.py --hours 24
+python scripts/send_delivery_diagnostics_report.py --hours 24 --only-on-alert --stdout-summary --quiet
+```
+
+## Open-source Status
+
+This repository is maintained as an **open-source PoC**.
+
+- Changelog roadmap: `TODO.md`
+- Secret rotation notes: `docs/SECRETS_ROTATION.md`
+- GitHub profile snippet: `docs/GITHUB_PROFILE_README_SNIPPET.md`
+
+## GitHub Profile Snippet
+
+Use this file for your profile repository README:
+
+- [docs/GITHUB_PROFILE_README_SNIPPET.md](docs/GITHUB_PROFILE_README_SNIPPET.md)
+
+## Security Checklist (Before Push)
+
+```bash
+.venv/bin/python scripts/check_secrets_hygiene.py --include-untracked --max-issues 20
+git grep -nE "([0-9]{8,12}:[A-Za-z0-9_-]{30,}|sk-or-v1-[A-Za-z0-9]{20,})" || true
+```
+
+> *Never commit real API tokens into `.env.example`, README files, scripts, or CI configs.*
+
+## Contribution
+
+PR rules:
+
+- Keep one logical change-set per PR.
+- Run checks from *Quality & Diagnostics Scripts* before opening a PR.
+- Do not introduce files larger than `1000` lines.
+- Document every new runtime flag in README.
+
+## License
+
+This project is licensed under the **MIT License**.
+See [LICENSE](LICENSE).
