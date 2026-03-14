@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    git \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -43,6 +44,9 @@ COPY src ./src
 COPY scripts ./scripts
 
 RUN pip install --upgrade pip \
+    && python scripts/check_max_lines.py --max-lines 1000 --include-untracked \
+    && python scripts/check_selectors_registry.py --min-selectors 6 \
+    && python scripts/check_secrets_hygiene.py --include-untracked \
     && pip install . \
     && python -m playwright install chromium
 
