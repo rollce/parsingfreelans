@@ -275,7 +275,20 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         settings.sessions_path.mkdir(parents=True, exist_ok=True)
         session_file = self._session_file()
         anti_bot_cfg = self._anti_bot_config()
-        browser = await self._ensure_browser(anti_bot_cfg)
+        reuse_browser = bool(settings.playwright_reuse_browser)
+        if reuse_browser:
+            browser = await self._ensure_browser(anti_bot_cfg)
+        else:
+            playwright = await async_playwright().start()
+            launch_payload: dict[str, Any] = {"headless": settings.playwright_headless}
+            proxy_payload = self._resolve_proxy_settings(anti_bot_cfg)
+            if proxy_payload:
+                launch_payload["proxy"] = proxy_payload
+            launch_args = self._resolve_launch_args(anti_bot_cfg)
+            if launch_args:
+                launch_payload["args"] = launch_args
+            browser = await playwright.chromium.launch(**launch_payload)
+
         context_payload = self._resolve_context_profile(anti_bot_cfg)
         if session_file.exists():
             context_payload["storage_state"] = str(session_file)
@@ -283,10 +296,26 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         if settings.playwright_stealth_enabled or bool(anti_bot_cfg.get("enabled")):
             await self._apply_stealth(context)
         await self._apply_resource_blocking(context, anti_bot_cfg)
-        self._contexts_created_since_launch += 1
+        if reuse_browser:
+            self._contexts_created_since_launch += 1
+        else:
+            context._playwright_handle = playwright  # type: ignore[attr-defined]
         return context
 
     async def _close_context(self, context: BrowserContext) -> None:
+        if not settings.playwright_reuse_browser:
+            browser = context.browser
+            playwright = getattr(context, "_playwright_handle", None)
+            with suppress(Exception):
+                await context.close()
+            if browser:
+                with suppress(Exception):
+                    await browser.close()
+            if playwright:
+                with suppress(Exception):
+                    await playwright.stop()
+            return
+
         with suppress(Exception):
             await context.close()
         if not self._should_recycle_browser():

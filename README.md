@@ -115,9 +115,11 @@ Main tuning flags:
 
 - `PLAYWRIGHT_BLOCK_RESOURCES=true`
 - `PLAYWRIGHT_BLOCK_RESOURCE_TYPES=image,media,font`
+- `PLAYWRIGHT_REUSE_BROWSER=false` (lower idle RAM/cost)
 - `PLAYWRIGHT_BROWSER_RECYCLE_CONTEXTS=24`
 - `PLAYWRIGHT_BROWSER_MAX_AGE_MINUTES=30`
 - `PLAYWRIGHT_LAUNCH_ARGS=...`
+- `EVENTS_MAX_ROWS=5000` (caps event-log table growth)
 
 ## Quality & Diagnostics Scripts
 
