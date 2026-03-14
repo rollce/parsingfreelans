@@ -105,11 +105,12 @@ delivery-health, heartbeat, pending reanimate, failover, and related limits.
 
 ## Performance Defaults
 
-Memory optimization is enabled by default:
+Memory and cost optimization is enabled by default:
 
 - shared Playwright browser per platform adapter (contexts are recycled),
 - resource blocking for heavy types (`image,media,font`),
-- smaller default viewport (`1280x720`) to reduce renderer memory.
+- smaller default viewport (`1280x720`) to reduce renderer memory,
+- slower scan cadence and lower page depth in default profile.
 
 Main tuning flags:
 
@@ -120,6 +121,9 @@ Main tuning flags:
 - `PLAYWRIGHT_BROWSER_MAX_AGE_MINUTES=30`
 - `PLAYWRIGHT_LAUNCH_ARGS=...`
 - `EVENTS_MAX_ROWS=5000` (caps event-log table growth)
+- `POLL_INTERVAL_SECONDS=20`
+- `MAX_PAGES_PER_PLATFORM_SCAN=3`
+- `MAX_LEADS_PER_PLATFORM=15`
 
 ## Quality & Diagnostics Scripts
 

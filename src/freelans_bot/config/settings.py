@@ -14,10 +14,10 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"
     database_path: str = "./data/freelans.db"
-    poll_interval_seconds: int = 5
+    poll_interval_seconds: int = 20
     min_score_to_apply: float = 0.45
-    max_leads_per_platform: int = 40
-    max_pages_per_platform_scan: int = 8
+    max_leads_per_platform: int = 15
+    max_pages_per_platform_scan: int = 3
     max_applies_per_cycle: int = 30
     auto_apply: bool = True
     auto_apply_hour_limit: int = 6
@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     telegram_notify_batch_size: int = 8
     telegram_notify_retry_after_seconds: int = 45
     telegram_notify_max_attempts: int = 200
-    telegram_platform_burst_limit: int = 12
-    telegram_platform_burst_window_minutes: int = 10
+    telegram_platform_burst_limit: int = 6
+    telegram_platform_burst_window_minutes: int = 15
 
     llm_provider: str = "openrouter"
 
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     proposal_similarity_threshold: float = 0.93
     proposal_similarity_window: int = 30
     proposal_banned_phrases: str = "guaranteed #1,100% guaranteed,предоплата на карту,только сегодня скидка"
-    validator_spike_alert_enabled: bool = True
+    validator_spike_alert_enabled: bool = False
     validator_spike_threshold: int = 10
     validator_spike_window_minutes: int = 15
     validator_share_alert_enabled: bool = True
@@ -102,48 +102,48 @@ class Settings(BaseSettings):
     db_backup_dir: str = "./backups"
     db_backup_hour_local: int = 4
     db_backup_retention_days: int = 14
-    events_cleanup_enabled: bool = True
+    events_cleanup_enabled: bool = False
     events_cleanup_hour_local: int = 5
     events_retention_days: int = 30
     events_max_rows: int = 5000
-    leads_cleanup_enabled: bool = True
+    leads_cleanup_enabled: bool = False
     leads_cleanup_hour_local: int = 6
     leads_retention_days: int = 45
-    stale_pending_alert_enabled: bool = True
+    stale_pending_alert_enabled: bool = False
     stale_pending_alert_threshold: int = 40
     stale_pending_alert_days: int = 45
-    delivery_health_alert_enabled: bool = True
+    delivery_health_alert_enabled: bool = False
     delivery_health_window_minutes: int = 30
     delivery_health_alert_threshold: float = 0.4
     delivery_health_alert_min_attempts: int = 10
     delivery_health_alert_cooldown_minutes: int = 30
-    delivery_streak_alert_enabled: bool = True
+    delivery_streak_alert_enabled: bool = False
     delivery_streak_alert_threshold: int = 8
-    telegram_heartbeat_enabled: bool = True
+    telegram_heartbeat_enabled: bool = False
     telegram_heartbeat_interval_minutes: int = 15
     telegram_heartbeat_fail_threshold: int = 3
-    pending_reanimate_enabled: bool = True
+    pending_reanimate_enabled: bool = False
     pending_reanimate_interval_minutes: int = 30
     pending_reanimate_max_runs_per_day: int = 12
     pending_reanimate_min_locked: int = 3
-    pending_queue_alert_enabled: bool = True
+    pending_queue_alert_enabled: bool = False
     pending_queue_alert_threshold: int = 60
-    no_new_leads_alert_enabled: bool = True
+    no_new_leads_alert_enabled: bool = False
     no_new_leads_alert_minutes: int = 45
-    worker_stall_alert_enabled: bool = True
+    worker_stall_alert_enabled: bool = False
     worker_stall_alert_minutes: int = 12
-    platform_failover_enabled: bool = True
+    platform_failover_enabled: bool = False
     platform_failover_error_streak: int = 3
     platform_failover_skip_minutes: int = 30
-    platform_failover_sla_alert_enabled: bool = True
+    platform_failover_sla_alert_enabled: bool = False
     platform_failover_sla_threshold: int = 2
 
     enable_flru: bool = True
     enable_freelance_ru: bool = True
     enable_kwork: bool = True
-    enable_workzilla: bool = True
-    enable_youdo: bool = True
-    enable_yandex_uslugi: bool = True
+    enable_workzilla: bool = False
+    enable_youdo: bool = False
+    enable_yandex_uslugi: bool = False
     enable_freelancejob: bool = True
 
     @property
