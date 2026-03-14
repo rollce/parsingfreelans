@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_APP_ENV = os.getenv("APP_ENV", "dev").strip().lower()
+_ENV_FILE = ".env" if _APP_ENV != "prod" else None
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "dev"
     database_path: str = "./data/freelans.db"
@@ -49,6 +53,9 @@ class Settings(BaseSettings):
     validator_spike_alert_enabled: bool = True
     validator_spike_threshold: int = 10
     validator_spike_window_minutes: int = 15
+    validator_share_alert_enabled: bool = True
+    validator_share_alert_threshold: float = 0.35
+    validator_share_alert_min_attempts: int = 8
 
     target_languages: str = "ru"
     keywords: str = "telegram bot,python,ai automation"
@@ -70,7 +77,64 @@ class Settings(BaseSettings):
     playwright_timeout_ms: int = 45_000
     playwright_feed_timeout_ms: int = 15_000
     playwright_cards_wait_timeout_ms: int = 5_000
+    playwright_stealth_enabled: bool = True
+    playwright_default_user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    )
+    playwright_locale: str = "ru-RU"
+    playwright_timezone_id: str = "Europe/Moscow"
+    playwright_viewport_width: int = 1280
+    playwright_viewport_height: int = 720
+    playwright_proxy_server: str = ""
+    playwright_proxy_username: str = ""
+    playwright_proxy_password: str = ""
+    playwright_anti_bot_jitter_min_ms: int = 250
+    playwright_anti_bot_jitter_max_ms: int = 1200
+    playwright_block_resources: bool = True
+    playwright_block_resource_types: str = "image,media,font"
+    playwright_browser_recycle_contexts: int = 24
+    playwright_browser_max_age_minutes: int = 30
+    playwright_launch_args: str = ""
     sessions_dir: str = "./state"
+    db_backup_enabled: bool = True
+    db_backup_dir: str = "./backups"
+    db_backup_hour_local: int = 4
+    db_backup_retention_days: int = 14
+    events_cleanup_enabled: bool = True
+    events_cleanup_hour_local: int = 5
+    events_retention_days: int = 30
+    leads_cleanup_enabled: bool = True
+    leads_cleanup_hour_local: int = 6
+    leads_retention_days: int = 45
+    stale_pending_alert_enabled: bool = True
+    stale_pending_alert_threshold: int = 40
+    stale_pending_alert_days: int = 45
+    delivery_health_alert_enabled: bool = True
+    delivery_health_window_minutes: int = 30
+    delivery_health_alert_threshold: float = 0.4
+    delivery_health_alert_min_attempts: int = 10
+    delivery_health_alert_cooldown_minutes: int = 30
+    delivery_streak_alert_enabled: bool = True
+    delivery_streak_alert_threshold: int = 8
+    telegram_heartbeat_enabled: bool = True
+    telegram_heartbeat_interval_minutes: int = 15
+    telegram_heartbeat_fail_threshold: int = 3
+    pending_reanimate_enabled: bool = True
+    pending_reanimate_interval_minutes: int = 30
+    pending_reanimate_max_runs_per_day: int = 12
+    pending_reanimate_min_locked: int = 3
+    pending_queue_alert_enabled: bool = True
+    pending_queue_alert_threshold: int = 60
+    no_new_leads_alert_enabled: bool = True
+    no_new_leads_alert_minutes: int = 45
+    worker_stall_alert_enabled: bool = True
+    worker_stall_alert_minutes: int = 12
+    platform_failover_enabled: bool = True
+    platform_failover_error_streak: int = 3
+    platform_failover_skip_minutes: int = 30
+    platform_failover_sla_alert_enabled: bool = True
+    platform_failover_sla_threshold: int = 2
 
     enable_flru: bool = True
     enable_freelance_ru: bool = True
@@ -105,12 +169,24 @@ class Settings(BaseSettings):
         return [x.strip() for x in self.portfolio_urls.split(",") if x.strip()]
 
     @property
+    def playwright_block_resource_types_list(self) -> list[str]:
+        return [x.strip().lower() for x in self.playwright_block_resource_types.split(",") if x.strip()]
+
+    @property
+    def playwright_launch_args_list(self) -> list[str]:
+        return [x.strip() for x in self.playwright_launch_args.split(",") if x.strip()]
+
+    @property
     def database_file(self) -> Path:
         return Path(self.database_path)
 
     @property
     def sessions_path(self) -> Path:
         return Path(self.sessions_dir)
+
+    @property
+    def db_backup_path(self) -> Path:
+        return Path(self.db_backup_dir)
 
 
 settings = Settings()

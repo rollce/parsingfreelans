@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import random
 import re
+import time
+from contextlib import suppress
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from dateutil import parser as dt_parser
-
-from playwright.async_api import BrowserContext, TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
+from playwright.async_api import Browser, BrowserContext, Playwright, Route, async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from freelans_bot.adapters.base import BasePlatformAdapter
 from freelans_bot.adapters.errors import SessionExpiredError
@@ -23,6 +26,11 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
     def __init__(self, name: str, config: dict[str, Any]) -> None:
         self.name = name
         self.config = config
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._browser_lock = asyncio.Lock()
+        self._contexts_created_since_launch = 0
+        self._browser_started_at_monotonic = 0.0
 
     def _session_file(self) -> Path:
         fname = self.config.get("session_file")
@@ -30,24 +38,266 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             return settings.sessions_path / f"{self.name}.json"
         return settings.sessions_path / fname
 
+    def _anti_bot_config(self) -> dict[str, Any]:
+        cfg = self.config.get("anti_bot")
+        if isinstance(cfg, dict):
+            return cfg
+        return {}
+
+    def _resolve_proxy_settings(self, anti_bot_cfg: dict[str, Any]) -> dict[str, str] | None:
+        nested_proxy = anti_bot_cfg.get("proxy")
+        proxy_server = ""
+        proxy_username = ""
+        proxy_password = ""
+
+        if isinstance(nested_proxy, dict):
+            proxy_server = str(nested_proxy.get("server") or "").strip()
+            proxy_username = str(nested_proxy.get("username") or "").strip()
+            proxy_password = str(nested_proxy.get("password") or "").strip()
+
+        proxy_server = str(anti_bot_cfg.get("proxy_server") or proxy_server or settings.playwright_proxy_server).strip()
+        proxy_username = str(
+            anti_bot_cfg.get("proxy_username") or proxy_username or settings.playwright_proxy_username
+        ).strip()
+        proxy_password = str(
+            anti_bot_cfg.get("proxy_password") or proxy_password or settings.playwright_proxy_password
+        ).strip()
+
+        if not proxy_server:
+            return None
+
+        payload: dict[str, str] = {"server": proxy_server}
+        if proxy_username:
+            payload["username"] = proxy_username
+        if proxy_password:
+            payload["password"] = proxy_password
+        return payload
+
+    def _default_launch_args(self) -> list[str]:
+        return [
+            "--disable-dev-shm-usage",
+            "--disable-background-networking",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-features=Translate,BackForwardCache",
+            "--mute-audio",
+            "--no-default-browser-check",
+            "--no-first-run",
+        ]
+
+    def _resolve_launch_args(self, anti_bot_cfg: dict[str, Any]) -> list[str]:
+        args: list[str] = []
+        seen: set[str] = set()
+
+        def add_arg(raw: object) -> None:
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                return
+            seen.add(value)
+            args.append(value)
+
+        for value in self._default_launch_args():
+            add_arg(value)
+        for value in settings.playwright_launch_args_list:
+            add_arg(value)
+
+        raw_args = anti_bot_cfg.get("launch_args")
+        if isinstance(raw_args, list):
+            for item in raw_args:
+                add_arg(item)
+        return args
+
+    def _resolve_blocked_resource_types(self, anti_bot_cfg: dict[str, Any]) -> set[str]:
+        block_cfg = anti_bot_cfg.get("block_resources")
+        enabled = bool(settings.playwright_block_resources)
+        blocked_types = list(settings.playwright_block_resource_types_list)
+
+        if isinstance(block_cfg, bool):
+            enabled = block_cfg
+        elif isinstance(block_cfg, dict):
+            if "enabled" in block_cfg:
+                enabled = bool(block_cfg.get("enabled"))
+            raw_types = block_cfg.get("resource_types")
+            if isinstance(raw_types, list):
+                blocked_types = [str(x or "").strip().lower() for x in raw_types if str(x or "").strip()]
+
+        if not enabled:
+            return set()
+
+        valid_types = {
+            "document",
+            "stylesheet",
+            "image",
+            "media",
+            "font",
+            "script",
+            "texttrack",
+            "xhr",
+            "fetch",
+            "eventsource",
+            "websocket",
+            "manifest",
+            "other",
+        }
+        return {item for item in blocked_types if item in valid_types}
+
+    def _resolve_context_profile(self, anti_bot_cfg: dict[str, Any]) -> dict[str, Any]:
+        user_agent = str(anti_bot_cfg.get("user_agent") or settings.playwright_default_user_agent).strip()
+        locale = str(anti_bot_cfg.get("locale") or settings.playwright_locale).strip()
+        timezone_id = str(anti_bot_cfg.get("timezone_id") or settings.playwright_timezone_id).strip()
+
+        viewport_cfg = anti_bot_cfg.get("viewport")
+        width = int(settings.playwright_viewport_width)
+        height = int(settings.playwright_viewport_height)
+        if isinstance(viewport_cfg, dict):
+            with_width = viewport_cfg.get("width")
+            with_height = viewport_cfg.get("height")
+            if with_width is not None:
+                try:
+                    width = int(with_width)
+                except (TypeError, ValueError):
+                    width = int(settings.playwright_viewport_width)
+            if with_height is not None:
+                try:
+                    height = int(with_height)
+                except (TypeError, ValueError):
+                    height = int(settings.playwright_viewport_height)
+
+        width = max(900, min(2560, width))
+        height = max(600, min(1600, height))
+
+        payload: dict[str, Any] = {
+            "user_agent": user_agent,
+            "locale": locale or "ru-RU",
+            "timezone_id": timezone_id or "Europe/Moscow",
+            "viewport": {"width": width, "height": height},
+        }
+        return payload
+
+    async def _apply_stealth(self, context: BrowserContext) -> None:
+        script = """
+        () => {
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+          Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+          Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+          window.chrome = window.chrome || { runtime: {} };
+        }
+        """
+        await context.add_init_script(script)
+
+    async def _maybe_human_delay(self, anti_bot_cfg: dict[str, Any]) -> None:
+        enabled = bool(anti_bot_cfg.get("enabled"))
+        if not enabled:
+            return
+        raw_min = anti_bot_cfg.get("jitter_min_ms", settings.playwright_anti_bot_jitter_min_ms)
+        raw_max = anti_bot_cfg.get("jitter_max_ms", settings.playwright_anti_bot_jitter_max_ms)
+        try:
+            jitter_min_ms = int(raw_min)
+        except (TypeError, ValueError):
+            jitter_min_ms = int(settings.playwright_anti_bot_jitter_min_ms)
+        try:
+            jitter_max_ms = int(raw_max)
+        except (TypeError, ValueError):
+            jitter_max_ms = int(settings.playwright_anti_bot_jitter_max_ms)
+        jitter_min_ms = max(0, min(10_000, jitter_min_ms))
+        jitter_max_ms = max(jitter_min_ms, min(15_000, jitter_max_ms))
+        delay_ms = random.randint(jitter_min_ms, jitter_max_ms)
+        if delay_ms > 0:
+            await asyncio.sleep(delay_ms / 1000.0)
+
+    def _should_recycle_browser(self) -> bool:
+        context_limit = int(settings.playwright_browser_recycle_contexts)
+        if context_limit > 0 and self._contexts_created_since_launch >= context_limit:
+            return True
+        age_limit_minutes = int(settings.playwright_browser_max_age_minutes)
+        if age_limit_minutes > 0 and self._browser_started_at_monotonic > 0:
+            age_seconds = time.monotonic() - self._browser_started_at_monotonic
+            if age_seconds >= (age_limit_minutes * 60):
+                return True
+        return False
+
+    async def _shutdown_browser_locked(self) -> None:
+        browser = self._browser
+        playwright = self._playwright
+        self._browser = None
+        self._playwright = None
+        self._contexts_created_since_launch = 0
+        self._browser_started_at_monotonic = 0.0
+
+        if browser and browser.is_connected():
+            with suppress(Exception):
+                await browser.close()
+        if playwright:
+            with suppress(Exception):
+                await playwright.stop()
+
+    async def _ensure_browser(self, anti_bot_cfg: dict[str, Any]) -> Browser:
+        if self._browser and self._playwright and self._browser.is_connected():
+            return self._browser
+
+        async with self._browser_lock:
+            if self._browser and self._playwright and self._browser.is_connected():
+                return self._browser
+            if self._browser or self._playwright:
+                await self._shutdown_browser_locked()
+
+            playwright = await async_playwright().start()
+            launch_payload: dict[str, Any] = {"headless": settings.playwright_headless}
+            proxy_payload = self._resolve_proxy_settings(anti_bot_cfg)
+            if proxy_payload:
+                launch_payload["proxy"] = proxy_payload
+            launch_args = self._resolve_launch_args(anti_bot_cfg)
+            if launch_args:
+                launch_payload["args"] = launch_args
+            browser = await playwright.chromium.launch(**launch_payload)
+
+            self._playwright = playwright
+            self._browser = browser
+            self._contexts_created_since_launch = 0
+            self._browser_started_at_monotonic = time.monotonic()
+            return browser
+
+    async def _apply_resource_blocking(self, context: BrowserContext, anti_bot_cfg: dict[str, Any]) -> None:
+        blocked_types = self._resolve_blocked_resource_types(anti_bot_cfg)
+        if not blocked_types:
+            return
+
+        async def route_handler(route: Route) -> None:
+            resource_type = str(route.request.resource_type or "").strip().lower()
+            if resource_type in blocked_types:
+                await route.abort()
+                return
+            await route.continue_()
+
+        await context.route("**/*", route_handler)
+
     async def _new_context(self) -> BrowserContext:
         settings.sessions_path.mkdir(parents=True, exist_ok=True)
         session_file = self._session_file()
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=settings.playwright_headless)
-        storage_state = str(session_file) if session_file.exists() else None
-        context = await browser.new_context(storage_state=storage_state)
-        context._playwright_handle = playwright  # type: ignore[attr-defined]
+        anti_bot_cfg = self._anti_bot_config()
+        browser = await self._ensure_browser(anti_bot_cfg)
+        context_payload = self._resolve_context_profile(anti_bot_cfg)
+        if session_file.exists():
+            context_payload["storage_state"] = str(session_file)
+        context = await browser.new_context(**context_payload)
+        if settings.playwright_stealth_enabled or bool(anti_bot_cfg.get("enabled")):
+            await self._apply_stealth(context)
+        await self._apply_resource_blocking(context, anti_bot_cfg)
+        self._contexts_created_since_launch += 1
         return context
 
     async def _close_context(self, context: BrowserContext) -> None:
-        browser = context.browser
-        playwright = getattr(context, "_playwright_handle", None)
-        await context.close()
-        if browser:
-            await browser.close()
-        if playwright:
-            await playwright.stop()
+        with suppress(Exception):
+            await context.close()
+        if not self._should_recycle_browser():
+            return
+        async with self._browser_lock:
+            if self._should_recycle_browser():
+                await self._shutdown_browser_locked()
+
+    async def close(self) -> None:
+        async with self._browser_lock:
+            await self._shutdown_browser_locked()
 
     async def fetch_new_leads(
         self,
@@ -56,7 +306,10 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         *,
         max_pages: int | None = None,
     ) -> list[Lead]:
-        feed_url = self.config["feed_url"]
+        anti_bot_cfg = self._anti_bot_config()
+        feed_urls = self._collect_feed_urls()
+        if not feed_urls:
+            return []
         sel = self.config.get("selectors", {})
         card_sel = sel.get("card")
         if not card_sel:
@@ -74,54 +327,66 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         cards_wait_timeout_ms = max(500, settings.playwright_cards_wait_timeout_ms)
 
         context = await self._new_context()
-        page = await context.new_page()
+        page: Any | None = None
         rows: list[dict[str, str]] = []
         seen_urls: set[str] = set()
         try:
-            for page_num in range(1, max_pages + 1):
-                page_url = self._build_page_url(feed_url, page_num, pagination_cfg)
-                await page.goto(page_url, wait_until="domcontentloaded", timeout=feed_timeout_ms)
-                if await self._is_login_required(page=page, card_selector=card_sel):
-                    raise SessionExpiredError(
-                        f"SESSION_EXPIRED: platform={self.name} redirect/login detected on feed"
-                    )
-                try:
-                    await page.wait_for_selector(card_sel, timeout=cards_wait_timeout_ms)
-                except PlaywrightTimeoutError:
+            page = await context.new_page()
+            for feed_url in feed_urls:
+                for page_num in range(1, max_pages + 1):
+                    page_url = self._build_page_url(feed_url, page_num, pagination_cfg)
+                    await page.goto(page_url, wait_until="domcontentloaded", timeout=feed_timeout_ms)
+                    await self._maybe_human_delay(anti_bot_cfg)
                     if await self._is_login_required(page=page, card_selector=card_sel):
                         raise SessionExpiredError(
-                            f"SESSION_EXPIRED: platform={self.name} no access to feed, login required"
+                            f"SESSION_EXPIRED: platform={self.name} redirect/login detected on feed"
                         )
-                    if page_num == 1:
-                        return []
-                    break
+                    try:
+                        await page.wait_for_selector(card_sel, timeout=cards_wait_timeout_ms)
+                    except PlaywrightTimeoutError:
+                        if await self._is_login_required(page=page, card_selector=card_sel):
+                            raise SessionExpiredError(
+                                f"SESSION_EXPIRED: platform={self.name} no access to feed, login required"
+                            )
+                        if page_num == 1:
+                            break
+                        break
 
-                page_rows = await self._extract_rows(page=page, selectors=sel, limit=limit)
-                if not page_rows:
-                    break
+                    page_rows = await self._extract_rows(page=page, selectors=sel, limit=limit)
+                    if not page_rows:
+                        break
 
-                new_count = 0
-                for row in page_rows:
-                    raw_url = (row.get("url") or "").strip()
-                    if not raw_url:
-                        continue
-                    full_url = urljoin(feed_url, raw_url)
-                    if full_url in seen_urls:
-                        continue
-                    seen_urls.add(full_url)
-                    row["url"] = full_url
-                    rows.append(row)
-                    new_count += 1
                     if len(rows) >= limit:
                         break
 
+                    new_count = 0
+                    for row in page_rows:
+                        raw_url = (row.get("url") or "").strip()
+                        if not raw_url:
+                            continue
+                        full_url = urljoin(feed_url, raw_url)
+                        if full_url in seen_urls:
+                            continue
+                        seen_urls.add(full_url)
+                        row["url"] = full_url
+                        rows.append(row)
+                        new_count += 1
+                        if len(rows) >= limit:
+                            break
+
+                    if len(rows) >= limit:
+                        break
+                    if new_count == 0:
+                        break
+                    await self._maybe_human_delay(anti_bot_cfg)
                 if len(rows) >= limit:
-                    break
-                if new_count == 0:
                     break
         except PlaywrightTimeoutError:
             return []
         finally:
+            if page:
+                with suppress(Exception):
+                    await page.close()
             await self._close_context(context)
 
         leads: list[Lead] = []
@@ -155,6 +420,24 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             )
 
         return leads
+
+    def _collect_feed_urls(self) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+
+        def add_url(value: object) -> None:
+            raw = str(value or "").strip()
+            if not raw or raw in seen:
+                return
+            seen.add(raw)
+            out.append(raw)
+
+        add_url(self.config.get("feed_url"))
+        raw_list = self.config.get("feed_urls")
+        if isinstance(raw_list, list):
+            for item in raw_list:
+                add_url(item)
+        return out
 
     async def _extract_rows(
         self,
@@ -326,6 +609,7 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             return now_utc, False
 
     async def sync_profile(self, profile_data: dict[str, str]) -> tuple[bool, str]:
+        anti_bot_cfg = self._anti_bot_config()
         profile_cfg = self.config.get("profile", {})
         field_selectors = profile_cfg.get("fields", {})
         if not isinstance(field_selectors, dict) or not field_selectors:
@@ -345,9 +629,11 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             return False, "Не найден URL страницы профиля"
 
         context = await self._new_context()
-        page = await context.new_page()
+        page: Any | None = None
         try:
+            page = await context.new_page()
             await page.goto(target_url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
+            await self._maybe_human_delay(anti_bot_cfg)
             await page.wait_for_timeout(1000)
             if await self._is_login_required(
                 page=page,
@@ -403,9 +689,13 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
         finally:
+            if page:
+                with suppress(Exception):
+                    await page.close()
             await self._close_context(context)
 
     async def apply(self, lead: Lead, proposal_text: str) -> ApplyResult:
+        anti_bot_cfg = self._anti_bot_config()
         apply_cfg = self.config.get("apply", {})
         if not apply_cfg:
             return ApplyResult(
@@ -416,9 +706,11 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
             )
 
         context = await self._new_context()
-        page = await context.new_page()
+        page: Any | None = None
         try:
+            page = await context.new_page()
             await page.goto(lead.url, wait_until="domcontentloaded", timeout=settings.playwright_timeout_ms)
+            await self._maybe_human_delay(anti_bot_cfg)
             if await self._is_login_required(
                 page=page,
                 card_selector=None,
@@ -504,4 +796,7 @@ class PlaywrightPlatformAdapter(BasePlatformAdapter):
                 message=f"{type(exc).__name__}: {exc}",
             )
         finally:
+            if page:
+                with suppress(Exception):
+                    await page.close()
             await self._close_context(context)

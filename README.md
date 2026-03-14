@@ -103,6 +103,22 @@ Main sections:
 Runtime tuning is supported without redeploy: filters, intervals, alerts, backup/cleanup,
 delivery-health, heartbeat, pending reanimate, failover, and related limits.
 
+## Performance Defaults
+
+Memory optimization is enabled by default:
+
+- shared Playwright browser per platform adapter (contexts are recycled),
+- resource blocking for heavy types (`image,media,font`),
+- smaller default viewport (`1280x720`) to reduce renderer memory.
+
+Main tuning flags:
+
+- `PLAYWRIGHT_BLOCK_RESOURCES=true`
+- `PLAYWRIGHT_BLOCK_RESOURCE_TYPES=image,media,font`
+- `PLAYWRIGHT_BROWSER_RECYCLE_CONTEXTS=24`
+- `PLAYWRIGHT_BROWSER_MAX_AGE_MINUTES=30`
+- `PLAYWRIGHT_LAUNCH_ARGS=...`
+
 ## Quality & Diagnostics Scripts
 
 ### Base Pre-deploy Pack

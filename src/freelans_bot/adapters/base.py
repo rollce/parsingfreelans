@@ -26,3 +26,6 @@ class BasePlatformAdapter(ABC):
     @abstractmethod
     async def sync_profile(self, profile_data: dict[str, str]) -> tuple[bool, str]:
         raise NotImplementedError
+
+    async def close(self) -> None:
+        return None

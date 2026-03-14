@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 
 from freelans_bot.adapters.base import BasePlatformAdapter
 from freelans_bot.config.settings import settings
@@ -27,6 +28,11 @@ class Orchestrator:
         self.proposal_service = proposal_service
         self.proposal_validator = proposal_validator
         self.notifier = notifier
+
+    async def close(self) -> None:
+        for adapter in self.adapters:
+            with suppress(Exception):
+                await adapter.close()
 
     async def run_cycle(self, *, auto_apply: bool | None = None) -> dict[str, int]:
         return await self.run_cycle_with_options(
