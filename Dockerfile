@@ -44,10 +44,10 @@ COPY src ./src
 COPY scripts ./scripts
 
 RUN pip install --upgrade pip \
+    && pip install . \
     && python scripts/check_max_lines.py --max-lines 1000 --include-untracked \
     && python scripts/check_selectors_registry.py --min-selectors 6 \
     && python scripts/check_secrets_hygiene.py --include-untracked \
-    && pip install . \
     && python -m playwright install chromium
 
 CMD ["bash", "-lc", "python -m uvicorn freelans_bot.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
